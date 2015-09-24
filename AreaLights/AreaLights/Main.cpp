@@ -3,15 +3,14 @@
 #include "Renderer.h"
 
 // Constants
-static const wchar_t ClassName[] = L"VoxelTracer Test Application";
-static const uint32_t ScreenWidth = 640;
-static const uint32_t ScreenHeight = 480;
+static const wchar_t ClassName[] = L"AreaLights Test Application";
+static const uint32_t ScreenWidth = 1280;
+static const uint32_t ScreenHeight = 720;
 static const float Fov = XMConvertToRadians(70.f);
 static const float NearClip = 0.1f;
 static const float FarClip = 100.f;
 static const float CameraMoveSpeedPerSecond = 1.f;
 static const float CameraTurnSpeedPerSecond = 0.1f;
-static const bool VSyncEnabled = false;
 
 // Application variables
 static HINSTANCE Instance;
@@ -54,19 +53,16 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
     // TODO: Replace with something better as needed
 
     // Camera info
-    XMVECTOR position = XMVectorSet(0.f, 1.f, -2.f, 1.f);
-    XMMATRIX cameraWorld = XMMatrixIdentity();
-    cameraWorld.r[3] = position;
+    XMVECTOR cameraPosition = XMVectorSet(-1.f, 1.f, -3.f, 1.f);
+    XMVECTOR cameraForward = XMVectorSet(0.f, 0.f, 1.f, 0.f);
 
-    renderer->SetFov(Fov);
+    XMMATRIX worldToView = XMMatrixLookToLH(cameraPosition, cameraForward, XMVectorSet(0.f, 1.f, 0.f, 0.f));
 
     XMMATRIX projection = XMMatrixPerspectiveFovLH(
         Fov,
         ScreenWidth / (float)ScreenHeight,  // Aspect ratio of window client (rendering) area
         NearClip,
         FarClip);
-
-    wchar_t caption[200] = {};
 
     // Main loop
     MSG msg {};
@@ -95,6 +91,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
             float frameRate = 1.0f / (float)timeStep;
             lastTime = currTime;
 
+            UNREFERENCED_PARAMETER(frameRate);
+
             // Handle input
             if (GetAsyncKeyState(VK_ESCAPE) & 0x8000)
             {
@@ -104,11 +102,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
 
             // TODO: Replace with something better as needed
 
-            //renderer->Render(XMMatrixLookToLH(position, XMVectorSet(0.f, 0.f, 1.f, 0.f), XMVectorSet(0.f, 1.f, 0.f, 0.f)), projection, VSyncEnabled);
-            renderer->Render(cameraWorld, VSyncEnabled);
-
-            swprintf_s(caption, L"%s (%dx%d) - FPS: %3.2f", ClassName, ScreenWidth, ScreenHeight, frameRate);
-            SetWindowText(Window, caption);
+            renderer->Render(cameraPosition, worldToView, projection);
         }
     }
 

@@ -159,7 +159,7 @@ bool Renderer::Initialize()
     scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT | DXGI_USAGE_UNORDERED_ACCESS;
     scd.OutputWindow = Window;
     scd.SampleDesc.Count = 1;
-    scd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    scd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
     scd.Windowed = TRUE;
 
     hr = factory->CreateSwapChain(Device.Get(), &scd, &SwapChain);
@@ -226,6 +226,7 @@ bool Renderer::Initialize()
     // Create scene
     AABB block{};
 
+#if 0
     block.Center = XMFLOAT3(0.f, 0.f, 0.f);
     block.HalfWidths = XMFLOAT3(0.5f, 0.5f, 0.5f);
     Scene.push_back(block);
@@ -237,6 +238,14 @@ bool Renderer::Initialize()
     block.Center = XMFLOAT3(0.f, 1.125f, 0.f);
     block.HalfWidths = XMFLOAT3(0.125f, 0.125f, 0.125f);
     Scene.push_back(block);
+#else
+    for (int i = 0; i < 150; ++i)
+    {
+        block.HalfWidths = XMFLOAT3(rand() / (float)RAND_MAX * 0.25f, rand() / (float)RAND_MAX * 0.25f, rand() / (float)RAND_MAX * 0.25f);
+        block.Center = XMFLOAT3(rand() / (float)RAND_MAX * 10 - 5, rand() / (float)RAND_MAX * 10 - 5, rand() / (float)RAND_MAX * 10);
+        Scene.push_back(block);
+    }
+#endif
 
 #if defined(USE_CPU)
 
