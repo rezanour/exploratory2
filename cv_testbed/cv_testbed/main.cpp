@@ -4,8 +4,8 @@
 #include "util.h"
 
 static const wchar_t ClassName[] = L"cv_testbed";
-static const int ClientWidth = 1920;
-static const int ClientHeight = 1080;
+static const int ClientWidth = 1280;
+static const int ClientHeight = 720;
 
 static LRESULT CALLBACK AppWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -58,32 +58,32 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
         return -4;
     }
 
-    std::unique_ptr<float[]> lum = convert_to_luminance(image, true, width, height);
-    if (!lum)
-    {
-        assert(false);
-        return -5;
-    }
+    //std::unique_ptr<float[]> lum = convert_to_luminance(image, true, width, height);
+    //if (!lum)
+    //{
+    //    assert(false);
+    //    return -5;
+    //}
 
-    std::unique_ptr<uint32_t[]> edges(new uint32_t[width * height]);
-    if (!edges)
-    {
-        assert(false);
-        return -5;
-    }
-
-    for (int i = 0; i < width * height; ++i)
-    {
-        uint32_t byte = (uint32_t)(uint8_t)(lum[i] * 256.f);
-        edges[i] = 0xFF000000 | (byte << 16) | (byte << 8) | byte;
-    }
-
-    //std::unique_ptr<uint32_t[]> edges = detect_edges(image, true, width, height);
+    //std::unique_ptr<uint32_t[]> edges(new uint32_t[width * height]);
     //if (!edges)
     //{
     //    assert(false);
     //    return -5;
     //}
+
+    //for (int i = 0; i < width * height; ++i)
+    //{
+    //    uint32_t byte = (uint32_t)(uint8_t)(lum[i] * 256.f);
+    //    edges[i] = 0xFF000000 | (byte << 16) | (byte << 8) | byte;
+    //}
+
+    std::unique_ptr<uint32_t[]> edges = detect_edges(image, true, width, height);
+    if (!edges)
+    {
+        assert(false);
+        return -5;
+    }
 
     // Copy the result into the mem DC
     BITMAPINFO bmi{};
