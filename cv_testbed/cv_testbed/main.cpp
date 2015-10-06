@@ -3,6 +3,10 @@
 #include "edge_detect.h"
 #include "util.h"
 
+#include <d3d11.h>
+#include <wrl.h>
+using namespace Microsoft::WRL;
+
 static const wchar_t ClassName[] = L"cv_testbed";
 static const int ClientWidth = 1280;
 static const int ClientHeight = 720;
@@ -42,13 +46,60 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
         return -3;
     }
 
-    HDC hdc = GetDC(hwnd);
-    HDC hMemDC = CreateCompatibleDC(hdc);
-    assert(hMemDC);
-    ReleaseDC(hwnd, hdc);
+    ComPtr<IDXGIFactory> factory;
+    HRESULT hr = CreateDXGIFactory1(IID_PPV_ARGS(&factory));
+    if (FAILED(hr))
+    {
+        assert(false);
+        return -4;
+    }
+
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_0;
+    hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0,
+        &featureLevel, 1, D3D11_SDK_VERSION, &device, nullptr, &context);
+    if (FAILED(hr))
+    {
+        assert(false);
+        return -5;
+    }
+
+    DXGI_SWAP_CHAIN_DESC scd{};
+    scd.BufferCount = 2;
+    scd.BufferDesc.Width = ClientWidth;
+    scd.BufferDesc.Height = ClientHeight;
+    scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    scd.OutputWindow = hwnd;
+    scd.SampleDesc.Count = 1;
+    scd.Windowed = TRUE;
+
+    ComPtr<IDXGISwapChain> swapChain;
+    hr = factory->CreateSwapChain(device.Get(), &scd, &swapChain);
+    if (FAILED(hr))
+    {
+        assert(false);
+        return -6;
+    }
+
+    ComPtr<ID3D11Texture2D> gpu_back_buffer;
+    hr = swapChain->GetBuffer(0, IID_PPV_ARGS(&gpu_back_buffer));
+    if (FAILED(hr))
+    {
+        assert(false);
+        return -6;
+    }
 
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
+
+    std::unique_ptr<uint32_t[]> cpu_back_buffer(new uint32_t[ClientWidth * ClientHeight]);
+    if (!cpu_back_buffer)
+    {
+        assert(false);
+        return -7;
+    }
 
     int width = 0, height = 0;
     std::unique_ptr<uint32_t[]> image = load_image(L"car2.jpg", true, &width, &height);
@@ -58,25 +109,29 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
         return -4;
     }
 
-    //std::unique_ptr<float[]> lum = convert_to_luminance(image, true, width, height);
-    //if (!lum)
-    //{
-    //    assert(false);
-    //    return -5;
-    //}
+#if 0 // Show luminance
 
-    //std::unique_ptr<uint32_t[]> edges(new uint32_t[width * height]);
-    //if (!edges)
-    //{
-    //    assert(false);
-    //    return -5;
-    //}
+    std::unique_ptr<float[]> lum = convert_to_luminance(image, true, width, height);
+    if (!lum)
+    {
+        assert(false);
+        return -5;
+    }
 
-    //for (int i = 0; i < width * height; ++i)
-    //{
-    //    uint32_t byte = (uint32_t)(uint8_t)(lum[i] * 256.f);
-    //    edges[i] = 0xFF000000 | (byte << 16) | (byte << 8) | byte;
-    //}
+    std::unique_ptr<uint32_t[]> edges(new uint32_t[width * height]);
+    if (!edges)
+    {
+        assert(false);
+        return -5;
+    }
+
+    for (int i = 0; i < width * height; ++i)
+    {
+        uint32_t byte = (uint32_t)(uint8_t)(lum[i] * 256.f);
+        edges[i] = 0xFF000000 | (byte << 16) | (byte << 8) | byte;
+    }
+
+#else // Show edge filter
 
     std::unique_ptr<uint32_t[]> edges = detect_edges(image, true, width, height);
     if (!edges)
@@ -85,21 +140,15 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
         return -5;
     }
 
-    // Copy the result into the mem DC
-    BITMAPINFO bmi{};
-    bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
-    bmi.bmiHeader.biWidth = width;
-    bmi.bmiHeader.biHeight = -height; // DIB is bottom up
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
+#endif
 
-    uint32_t* pixel_buffer = nullptr;
-    HBITMAP dib = CreateDIBSection(hMemDC, &bmi, DIB_RGB_COLORS, (void**)&pixel_buffer, nullptr, 0);
-    assert(dib && pixel_buffer);
-
-    SelectObject(hMemDC, dib);
-
-    memcpy_s(pixel_buffer, width * height * sizeof(uint32_t), edges.get(), width * height * sizeof(uint32_t));
+    for (int y = 0; y < std::min(ClientHeight, height); ++y)
+    {
+        for (int x = 0; x < std::min(ClientWidth, width); ++x)
+        {
+            cpu_back_buffer[y * ClientWidth + x] = edges[y * width + x];
+        }
+    }
 
     MSG msg{};
     while (msg.message != WM_QUIT)
@@ -112,9 +161,8 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
         else
         {
             // Render image into the client area
-            hdc = GetDC(hwnd);
-            StretchBlt(hdc, 0, 0, ClientWidth, ClientHeight, hMemDC, 0, 0, width, height, SRCCOPY);
-            ReleaseDC(hwnd, hdc);
+            context->UpdateSubresource(gpu_back_buffer.Get(), 0, nullptr, cpu_back_buffer.get(), ClientWidth * sizeof(uint32_t), ClientWidth * ClientHeight * sizeof(uint32_t));
+            swapChain->Present(1, 0);
         }
     }
 

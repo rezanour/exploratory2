@@ -28,7 +28,7 @@ std::unique_ptr<uint32_t[]> detect_edges(const std::unique_ptr<uint32_t[]>& inpu
             float right = lum[y * width + (x + 1)];
             float down = lum[(y + 1) * width + x];
 
-            if (fabs(down - self) > 0.02f || fabs(right - self) > 0.02f)
+            if (fabs(down - self) > 0.04f || fabs(right - self) > 0.04f)
             {
                 output[y * width + x] = 0xFFFFFFFF;
             }
@@ -95,7 +95,7 @@ std::unique_ptr<uint32_t[]> detect_edges(const std::unique_ptr<uint32_t[]>& inpu
             __m128 length = _mm_sqrt_ps(adder);
             _mm_store_ps(lengths, length);
 
-            if (lengths[0] > 10.f || lengths[1] > 10.f)
+            if (lengths[0] > 30.f || lengths[1] > 30.f)
             {
                 output[y * width + x] = 0xFFFFFFFF;
             }
