@@ -1,8 +1,6 @@
 #include "precomp.h"
 #include "edge_detect.h"
 
-static std::unique_ptr<float[]> convert_to_luminance(const std::unique_ptr<uint32_t[]>& input, bool isBGRA, int width, int height);
-
 std::unique_ptr<uint32_t[]> detect_edges(const std::unique_ptr<uint32_t[]>& input, bool isBGRA, int width, int height)
 {
     std::unique_ptr<float[]> lum = convert_to_luminance(input, isBGRA, width, height);
@@ -51,7 +49,6 @@ std::unique_ptr<uint32_t[]> detect_edges(const std::unique_ptr<uint32_t[]>& inpu
 
 std::unique_ptr<float[]> convert_to_luminance(const std::unique_ptr<uint32_t[]>& input, bool isBGRA, int width, int height)
 {
-#if 1
     static const float inv256 = 1.0f / 256.0f;
 
     std::unique_ptr<float[]> lum(new float[width * height]);
@@ -60,6 +57,8 @@ std::unique_ptr<float[]> convert_to_luminance(const std::unique_ptr<uint32_t[]>&
         assert(false);
         return nullptr;
     }
+
+#if 0
 
     uint32_t* p = input.get();
     float* l = lum.get();
@@ -87,37 +86,49 @@ std::unique_ptr<float[]> convert_to_luminance(const std::unique_ptr<uint32_t[]>&
         }
     }
 
-    return lum;
+#else
+    __m128i extract_r = _mm_set_epi8(-1, -1, -1, 12, -1, -1, -1, 8, -1, -1, -1, 4, -1, -1, -1, 0);
+    __m128i extract_g = _mm_set_epi8(-1, -1, -1, 13, -1, -1, -1, 9, -1, -1, -1, 5, -1, -1, -1, 1);
+    __m128i extract_b = _mm_set_epi8(-1, -1, -1, 14, -1, -1, -1, 10, -1, -1, -1, 6, -1, -1, -1, 2);
 
-#else // Not done
-    // Our math is based on the data being in RGBA format, so use a shuffle to byte swap if
-    // BGRA is passed in
-    __m128i mask = (isBGRA ?
-        _mm_set_epi8(15, 12, 13, 14, 11, 8, 9, 10, 7, 4, 5, 6, 3, 0, 1, 2) :
-        _mm_set_epi8(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0));
+    __m128 r_factor = _mm_set1_ps(0.2126f * inv256);
+    __m128 g_factor = _mm_set1_ps(0.7152f * inv256);
+    __m128 b_factor = _mm_set1_ps(0.0722f * inv256);
 
-    __m128i zero = _mm_setzero_si128();
+    const __m128i* src = (const __m128i*)input.get();
+    float* dst = lum.get();
 
     // stream 4 pixels at a time
     const int num_blocks = width * height / 4;
     for (int i = 0; i < num_blocks; ++i)
     {
-        __m128i block = _mm_loadu_si128((const __m128i*)&input[i * 4]);
-        __m128i swapped = _mm_shuffle_epi8(block, mask);
+        // read in block of 4 pixels
+        __m128i block = _mm_loadu_si128(src++);
 
-        __m128i ab = _mm_unpacklo_epi8(swapped, zero);
-        __m128i a = _mm_unpacklo_epi16(ab, zero);
-        __m128i b = _mm_unpackhi_epi16(ab, zero);
-        __m128i cd = _mm_unpackhi_epi8(swapped, zero);
-        __m128i c = _mm_unpacklo_epi16(cd, zero);
-        __m128i d = _mm_unpackhi_epi16(cd, zero);
+        // extract out r, g, and b channels into 3 separate registers
+        __m128i r_int = _mm_shuffle_epi8(block, isBGRA ? extract_b : extract_r);
+        __m128i g_int = _mm_shuffle_epi8(block, extract_g);
+        __m128i b_int = _mm_shuffle_epi8(block, isBGRA ? extract_r : extract_b);
 
-        __m128 fa = _mm_cvtepi32_ps(a);
-        __m128 fb = _mm_cvtepi32_ps(b);
-        __m128 fc = _mm_cvtepi32_ps(c);
-        __m128 fd = _mm_cvtepi32_ps(d);
+        // convert from int to float
+        __m128 r = _mm_cvtepi32_ps(r_int);
+        __m128 g = _mm_cvtepi32_ps(g_int);
+        __m128 b = _mm_cvtepi32_ps(b_int);
 
-        _mm_stream_si128(dst++, _mm_or_si128(expanded, alpha));
+        // multiply by the factors (with the div by 256 baked in)
+        r = _mm_mul_ps(r, r_factor);
+        g = _mm_mul_ps(g, g_factor);
+        b = _mm_mul_ps(b, b_factor);
+
+        // sum them up to get the 4 luminance values
+        __m128 l = _mm_add_ps(r, g);
+        l = _mm_add_ps(l, b);
+
+        // write them out
+        _mm_storeu_ps(dst, l);
+        dst += 4;
     }
 #endif
+
+    return lum;
 }

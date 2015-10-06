@@ -171,6 +171,7 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <Image Include="car2.jpg" />
     <Image Include="simple_shapes.png" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

@@ -4,8 +4,8 @@
 #include "util.h"
 
 static const wchar_t ClassName[] = L"cv_testbed";
-static const int ClientWidth = 1280;
-static const int ClientHeight = 720;
+static const int ClientWidth = 1920;
+static const int ClientHeight = 1080;
 
 static LRESULT CALLBACK AppWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -47,46 +47,59 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
     assert(hMemDC);
     ReleaseDC(hwnd, hdc);
 
-    BITMAPINFO bmi{};
-    bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
-    bmi.bmiHeader.biWidth = ClientWidth;
-    bmi.bmiHeader.biHeight = -ClientHeight; // DIB is bottom up
-    bmi.bmiHeader.biPlanes = 1;
-    bmi.bmiHeader.biBitCount = 32;
-    bmi.bmiHeader.biSizeImage = ClientWidth * ClientHeight * sizeof(uint32_t);
-
-    uint32_t* frame_buffer = nullptr;
-    HBITMAP dib = CreateDIBSection(hMemDC, &bmi, DIB_RGB_COLORS, (void**)&frame_buffer, nullptr, 0);
-    assert(dib && frame_buffer);
-
-    SelectObject(hMemDC, dib);
-
     ShowWindow(hwnd, SW_SHOW);
     UpdateWindow(hwnd);
 
     int width = 0, height = 0;
-    std::unique_ptr<uint32_t[]> image = load_image(L"simple_shapes.png", true, &width, &height);
+    std::unique_ptr<uint32_t[]> image = load_image(L"car2.jpg", true, &width, &height);
     if (!image)
     {
         assert(false);
         return -4;
     }
 
-    std::unique_ptr<uint32_t[]> edges = detect_edges(image, true, width, height);
+    std::unique_ptr<float[]> lum = convert_to_luminance(image, true, width, height);
+    if (!lum)
+    {
+        assert(false);
+        return -5;
+    }
+
+    std::unique_ptr<uint32_t[]> edges(new uint32_t[width * height]);
     if (!edges)
     {
         assert(false);
         return -5;
     }
 
-    // Copy the result into the mem DC
-    for (int y = 0; y < std::min(height, ClientHeight); ++y)
+    for (int i = 0; i < width * height; ++i)
     {
-        for (int x = 0; x < std::min(width, ClientWidth); ++x)
-        {
-            frame_buffer[y * ClientWidth + x] = edges[y * width + x];
-        }
+        uint32_t byte = (uint32_t)(uint8_t)(lum[i] * 256.f);
+        edges[i] = 0xFF000000 | (byte << 16) | (byte << 8) | byte;
     }
+
+    //std::unique_ptr<uint32_t[]> edges = detect_edges(image, true, width, height);
+    //if (!edges)
+    //{
+    //    assert(false);
+    //    return -5;
+    //}
+
+    // Copy the result into the mem DC
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(bmi.bmiHeader);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height; // DIB is bottom up
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+
+    uint32_t* pixel_buffer = nullptr;
+    HBITMAP dib = CreateDIBSection(hMemDC, &bmi, DIB_RGB_COLORS, (void**)&pixel_buffer, nullptr, 0);
+    assert(dib && pixel_buffer);
+
+    SelectObject(hMemDC, dib);
+
+    memcpy_s(pixel_buffer, width * height * sizeof(uint32_t), edges.get(), width * height * sizeof(uint32_t));
 
     MSG msg{};
     while (msg.message != WM_QUIT)
