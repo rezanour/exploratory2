@@ -31,17 +31,23 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
 MixedApp::MixedApp(HINSTANCE instance)
     : Window(nullptr)
 {
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&WicFactory));
+    CHECKHR(hr, L"Failed to create WIC factory. hr = 0x%08x.", hr);
+
     InitializeWindow(instance);
     Renderer.reset(new ::Renderer(Window));
 
-    uint32_t red[10000];
-    for (int i = 0; i < _countof(red); ++i) { red[i] = 0xFF0000FF; }
+    uint32_t width = 0, height = 0;
+    std::unique_ptr<uint8_t[]> pixels = LoadImageFile(L"car2.jpg", &width, &height);
 
-    uint32_t blue[400];
-    for (int i = 0; i < _countof(blue); ++i) { blue[i] = 0xFFFF0000; }
+    Color = Renderer->CreateColorImage(width, height, (const uint32_t*)pixels.get());
+    Lum = Renderer->CreateLuminanceImage(width, height, nullptr);
+    Norm = Renderer->CreateNormalsImage(width, height, nullptr);
 
-    ScratchColor = Renderer->CreateColorImage(100, 100, red);
-    Renderer->FillColorImage(blue, 20, 20, ScratchColor, 40, 40);
+    Renderer->ColorToLum(Color, Lum);
+    Renderer->LumToNormals(Lum, Norm);
 }
 
 MixedApp::~MixedApp()
@@ -51,6 +57,11 @@ MixedApp::~MixedApp()
         DestroyWindow(Window);
         Window = nullptr;
     }
+
+    // Release before shutting down COM
+    WicFactory = nullptr;
+
+    CoUninitialize();
 }
 
 int MixedApp::Run()
@@ -76,7 +87,9 @@ void MixedApp::Update()
 {
     Renderer->Clear();
 
-    Renderer->DrawImage(ScratchColor, 128, 128, 64, 64);
+    Renderer->DrawImage(Color, 0, 0, 640, 360);
+    Renderer->DrawImage(Lum, 640, 0, 640, 360);
+    Renderer->DrawImage(Norm, 0, 360, 640, 360);
 
     Renderer->Present();
 }
@@ -124,4 +137,29 @@ LRESULT CALLBACK MixedApp::s_WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         break;
     }
     return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+std::unique_ptr<uint8_t[]> MixedApp::LoadImageFile(const wchar_t* filename, uint32_t* width, uint32_t* height)
+{
+    ComPtr<IWICBitmapDecoder> decoder;
+    HRESULT hr = WicFactory->CreateDecoderFromFilename(filename, nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder);
+    CHECKHR(hr, L"Failed to create image decoder for file. %s, hr = 0x%08x.", filename, hr);
+
+    ComPtr<IWICBitmapFrameDecode> frame;
+    hr = decoder->GetFrame(0, &frame);
+    CHECKHR(hr, L"Failed to decode image frame. hr = 0x%08x.", hr);
+
+    ComPtr<IWICFormatConverter> converter;
+    hr = WicFactory->CreateFormatConverter(&converter);
+    CHECKHR(hr, L"Failed to create image format converter. hr = 0x%08x.", hr);
+
+    hr = converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom);
+    CHECKHR(hr, L"Failed to initialize image format converter. hr = 0x%08x.", hr);
+
+    frame->GetSize(width, height);
+    std::unique_ptr<uint8_t[]> pixels(new uint8_t[(*width) * (*height) * sizeof(uint32_t)]);
+    hr = converter->CopyPixels(nullptr, sizeof(uint32_t) * (*width), sizeof(uint32_t) * (*width) * (*height), pixels.get());
+    CHECKHR(hr, L"Failed to decode image pixels. hr = 0x%08x.", hr);
+
+    return pixels;
 }

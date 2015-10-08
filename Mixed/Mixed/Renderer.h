@@ -79,8 +79,13 @@ public:
 
 private:
     void InitializeGraphics(HWND targetWindow);
+
     std::shared_ptr<Image> CreateImageInternal(uint32_t width, uint32_t height, DXGI_FORMAT format, ImageType type, const void* optionalSourceData, uint32_t sourceStride);
     void FillImageInternal(const void* sourceData, uint32_t width, uint32_t height, uint32_t sourceStride, const std::shared_ptr<Image>& dest, int destX, int destY);
+
+    void BindFullScreenQuad(const ComPtr<ID3D11PixelShader>& pixelShader, const std::shared_ptr<Image>& dest);
+    void BindDrawQuad(const ComPtr<ID3D11PixelShader>& pixelShader, const std::shared_ptr<Image>& dest);
+    void BindQuadRendering(const ComPtr<ID3D11VertexShader>& vertexShader, const ComPtr<ID3D11InputLayout>& inputLayout, const ComPtr<ID3D11PixelShader>& pixelShader, const std::shared_ptr<Image>& dest);
 
 private:
     ComPtr<IDXGIFactory2> Factory;
@@ -90,14 +95,25 @@ private:
     ComPtr<ID3D11DeviceContext> Context;
     ComPtr<ID3D11Texture2D> BackBuffer;
     ComPtr<ID3D11RenderTargetView> BackBufferRTV;
+
+    // Shared
     ComPtr<ID3D11SamplerState> LinearSampler;
     D3D11_VIEWPORT Viewport;
+    ComPtr<ID3D11VertexShader> FullScreenQuadVS;
+    ComPtr<ID3D11PixelShader> DrawFloatTexPS;
+    ComPtr<ID3D11InputLayout> FullScreenQuadIL;
+    ComPtr<ID3D11Buffer> QuadVB;
+
+    struct QuadVertex
+    {
+        XMFLOAT2 Position;
+        XMFLOAT2 TexCoord;
+    };
 
     // DrawQuad
     ComPtr<ID3D11VertexShader> DrawQuadVS;
     ComPtr<ID3D11PixelShader> DrawQuadPS;
     ComPtr<ID3D11InputLayout> DrawQuadIL;
-    ComPtr<ID3D11Buffer> DrawQuadVB;
     ComPtr<ID3D11Buffer> DrawQuadVS_CB;
 
     struct DrawQuadVSConstants
@@ -108,9 +124,9 @@ private:
         int pad[2];
     };
 
-    struct DrawQuadVertex
-    {
-        XMFLOAT2 Position;
-        XMFLOAT2 TexCoord;
-    };
+    // ColorToLum
+    ComPtr<ID3D11PixelShader> ColorToLumPS;
+
+    // LumToNorm
+    ComPtr<ID3D11PixelShader> LumToNormPS;
 };

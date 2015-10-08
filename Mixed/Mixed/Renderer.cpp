@@ -3,8 +3,12 @@
 #include "DebugUtil.h"
 
 // Shaders
+#include "FullScreenQuad_vs.h"
 #include "DrawQuad_vs.h"
 #include "DrawQuad_ps.h"
+#include "ColorToLum_ps.h"
+#include "DrawFloatTex_ps.h"
+#include "LumToNorm_ps.h"
 
 //=============================================================================
 // Renderer
@@ -82,24 +86,23 @@ void Renderer::CopyImage(const std::shared_ptr<Image>& source, const std::shared
     }
 
     // Otherwise, we need to use a shader
-
-    FAIL(L"%s Not implemented!", __FUNCTIONW__);
+    BindFullScreenQuad(DrawQuadPS, dest);
+    Context->PSSetShaderResources(0, 1, source->SRV.GetAddressOf());
+    Context->Draw(6, 0);
 }
 
 void Renderer::ColorToLum(const std::shared_ptr<Image>& source, const std::shared_ptr<Image>& dest)
 {
-    UNREFERENCED_PARAMETER(source);
-    UNREFERENCED_PARAMETER(dest);
-
-    FAIL(L"%s Not implemented!", __FUNCTIONW__);
+    BindFullScreenQuad(ColorToLumPS, dest);
+    Context->PSSetShaderResources(0, 1, source->SRV.GetAddressOf());
+    Context->Draw(6, 0);
 }
 
 void Renderer::LumToNormals(const std::shared_ptr<Image>& source, const std::shared_ptr<Image>& dest)
 {
-    UNREFERENCED_PARAMETER(source);
-    UNREFERENCED_PARAMETER(dest);
-
-    FAIL(L"%s Not implemented!", __FUNCTIONW__);
+    BindFullScreenQuad(LumToNormPS, dest);
+    Context->PSSetShaderResources(0, 1, source->SRV.GetAddressOf());
+    Context->Draw(6, 0);
 }
 
 void Renderer::DepthToNormals(const std::shared_ptr<Image>& source, const std::shared_ptr<Image>& dest)
@@ -112,14 +115,14 @@ void Renderer::DepthToNormals(const std::shared_ptr<Image>& source, const std::s
 
 void Renderer::DrawImage(const std::shared_ptr<Image>& image, int x, int y, uint32_t width, uint32_t height)
 {
-    Context->VSSetShader(DrawQuadVS.Get(), nullptr, 0);
-    Context->PSSetShader(DrawQuadPS.Get(), nullptr, 0);
-
-    static const uint32_t stride = sizeof(DrawQuadVertex);
-    uint32_t offset = 0;
-    Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    Context->IASetInputLayout(DrawQuadIL.Get());
-    Context->IASetVertexBuffers(0, 1, DrawQuadVB.GetAddressOf(), &stride, &offset);
+    if (image->Type == ImageType::Luminance || image->Type == ImageType::Depth)
+    {
+        BindDrawQuad(DrawFloatTexPS, nullptr);
+    }
+    else
+    {
+        BindDrawQuad(DrawQuadPS, nullptr);
+    }
 
     DrawQuadVSConstants constants{};
     constants.InvViewportSize = XMFLOAT2(1.f / Viewport.Width, 1.f / Viewport.Height);
@@ -129,11 +132,6 @@ void Renderer::DrawImage(const std::shared_ptr<Image>& image, int x, int y, uint
     Context->VSSetConstantBuffers(0, 1, DrawQuadVS_CB.GetAddressOf());
 
     Context->PSSetShaderResources(0, 1, image->SRV.GetAddressOf());
-    Context->PSSetSamplers(0, 1, LinearSampler.GetAddressOf());
-
-    Context->OMSetRenderTargets(1, BackBufferRTV.GetAddressOf(), nullptr);
-    Context->RSSetViewports(1, &Viewport);
-
     Context->Draw(6, 0);
 }
 
@@ -179,6 +177,7 @@ void Renderer::InitializeGraphics(HWND targetWindow)
     hr = Device->CreateRenderTargetView(BackBuffer.Get(), nullptr, &BackBufferRTV);
     CHECKHR(hr, L"CreateRenderTargetView failed. hr = 0x%08x.", hr);
 
+    // Set up shared resources
     D3D11_SAMPLER_DESC sd{};
     sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     sd.AddressU = sd.AddressV = sd.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
@@ -190,11 +189,10 @@ void Renderer::InitializeGraphics(HWND targetWindow)
     Viewport.Height = (float)scd.Height;
     Viewport.MaxDepth = 1.f;
 
-    // DrawQuad
-    hr = Device->CreateVertexShader(DrawQuad_vs, sizeof(DrawQuad_vs), nullptr, &DrawQuadVS);
+    hr = Device->CreateVertexShader(FullScreenQuad_vs, sizeof(FullScreenQuad_vs), nullptr, &FullScreenQuadVS);
     CHECKHR(hr, L"CreateVertexShader failed. hr = 0x%08x.", hr);
 
-    hr = Device->CreatePixelShader(DrawQuad_ps, sizeof(DrawQuad_ps), nullptr, &DrawQuadPS);
+    hr = Device->CreatePixelShader(DrawFloatTex_ps, sizeof(DrawFloatTex_ps), nullptr, &DrawFloatTexPS);
     CHECKHR(hr, L"CreatePixelShader failed. hr = 0x%08x.", hr);
 
     D3D11_INPUT_ELEMENT_DESC elems[2]{};
@@ -204,10 +202,10 @@ void Renderer::InitializeGraphics(HWND targetWindow)
     elems[1].Format = DXGI_FORMAT_R32G32_FLOAT;
     elems[1].SemanticName = "TEXCOORD";
 
-    hr = Device->CreateInputLayout(elems, _countof(elems), DrawQuad_vs, sizeof(DrawQuad_vs), &DrawQuadIL);
+    hr = Device->CreateInputLayout(elems, _countof(elems), FullScreenQuad_vs, sizeof(FullScreenQuad_vs), &FullScreenQuadIL);
     CHECKHR(hr, L"CreateInputLayout failed. hr = 0x%08x.", hr);
 
-    DrawQuadVertex drawQuadVerts[]
+    QuadVertex quadVerts[]
     {
         { XMFLOAT2(-1, 1), XMFLOAT2(0, 0) },
         { XMFLOAT2(1, 1), XMFLOAT2(1, 0) },
@@ -219,16 +217,26 @@ void Renderer::InitializeGraphics(HWND targetWindow)
 
     D3D11_BUFFER_DESC bd{};
     bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-    bd.ByteWidth = sizeof(drawQuadVerts);
-    bd.StructureByteStride = sizeof(DrawQuadVertex);
+    bd.ByteWidth = sizeof(quadVerts);
+    bd.StructureByteStride = sizeof(QuadVertex);
 
     D3D11_SUBRESOURCE_DATA init{};
-    init.pSysMem = drawQuadVerts;
+    init.pSysMem = quadVerts;
     init.SysMemPitch = bd.ByteWidth;
     init.SysMemSlicePitch = bd.ByteWidth;
 
-    hr = Device->CreateBuffer(&bd, &init, &DrawQuadVB);
+    hr = Device->CreateBuffer(&bd, &init, &QuadVB);
     CHECKHR(hr, L"CreateBuffer failed. hr = 0x%08x.", hr);
+
+    // DrawQuad
+    hr = Device->CreateVertexShader(DrawQuad_vs, sizeof(DrawQuad_vs), nullptr, &DrawQuadVS);
+    CHECKHR(hr, L"CreateVertexShader failed. hr = 0x%08x.", hr);
+
+    hr = Device->CreatePixelShader(DrawQuad_ps, sizeof(DrawQuad_ps), nullptr, &DrawQuadPS);
+    CHECKHR(hr, L"CreatePixelShader failed. hr = 0x%08x.", hr);
+
+    hr = Device->CreateInputLayout(elems, _countof(elems), DrawQuad_vs, sizeof(DrawQuad_vs), &DrawQuadIL);
+    CHECKHR(hr, L"CreateInputLayout failed. hr = 0x%08x.", hr);
 
     bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     bd.ByteWidth = sizeof(DrawQuadVSConstants);
@@ -236,6 +244,22 @@ void Renderer::InitializeGraphics(HWND targetWindow)
 
     hr = Device->CreateBuffer(&bd, nullptr, &DrawQuadVS_CB);
     CHECKHR(hr, L"CreateBuffer failed. hr = 0x%08x.", hr);
+
+    // ColorToLum
+    hr = Device->CreatePixelShader(ColorToLum_ps, sizeof(ColorToLum_ps), nullptr, &ColorToLumPS);
+    CHECKHR(hr, L"CreatePixelShader failed. hr = 0x%08x.", hr);
+
+    // LumToNorm
+    hr = Device->CreatePixelShader(LumToNorm_ps, sizeof(LumToNorm_ps), nullptr, &LumToNormPS);
+    CHECKHR(hr, L"CreatePixelShader failed. hr = 0x%08x.", hr);
+
+    // Configure shared pipeline
+    static const uint32_t stride = sizeof(QuadVertex);
+    uint32_t offset = 0;
+    Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    Context->IASetVertexBuffers(0, 1, QuadVB.GetAddressOf(), &stride, &offset);
+
+    Context->PSSetSamplers(0, 1, LinearSampler.GetAddressOf());
 }
 
 std::shared_ptr<Image> Renderer::CreateImageInternal(uint32_t width, uint32_t height, DXGI_FORMAT format, ImageType type, const void* optionalSourceData, uint32_t sourceStride)
@@ -282,4 +306,43 @@ void Renderer::FillImageInternal(const void* sourceData, uint32_t width, uint32_
     box.back = 1;
 
     Context->UpdateSubresource(dest->Texture.Get(), 0, &box, sourceData, sourceStride * width, sourceStride * width * height);
+}
+
+void Renderer::BindFullScreenQuad(const ComPtr<ID3D11PixelShader>& pixelShader, const std::shared_ptr<Image>& dest)
+{
+    BindQuadRendering(FullScreenQuadVS, FullScreenQuadIL, pixelShader, dest);
+}
+
+void Renderer::BindDrawQuad(const ComPtr<ID3D11PixelShader>& pixelShader, const std::shared_ptr<Image>& dest)
+{
+    BindQuadRendering(DrawQuadVS, DrawQuadIL, pixelShader, dest);
+}
+
+void Renderer::BindQuadRendering(const ComPtr<ID3D11VertexShader>& vertexShader, const ComPtr<ID3D11InputLayout>& inputLayout, const ComPtr<ID3D11PixelShader>& pixelShader, const std::shared_ptr<Image>& dest)
+{
+    ID3D11ShaderResourceView* nullSRVs[]{ nullptr, nullptr, nullptr };
+    Context->PSSetShaderResources(0, _countof(nullSRVs), nullSRVs);
+
+    ID3D11RenderTargetView* nullRTVs[]{ nullptr, nullptr, nullptr };
+    Context->OMSetRenderTargets(_countof(nullRTVs), nullRTVs, nullptr);
+
+    Context->IASetInputLayout(inputLayout.Get());
+    Context->VSSetShader(vertexShader.Get(), nullptr, 0);
+    Context->PSSetShader(pixelShader.Get(), nullptr, 0);
+
+    if (dest)
+    {
+        Context->OMSetRenderTargets(1, dest->RTV.GetAddressOf(), nullptr);
+
+        D3D11_VIEWPORT viewport{};
+        viewport.Width = (float)dest->Width;
+        viewport.Height = (float)dest->Height;
+        viewport.MaxDepth = 1.f;
+        Context->RSSetViewports(1, &viewport);
+    }
+    else
+    {
+        Context->OMSetRenderTargets(1, BackBufferRTV.GetAddressOf(), nullptr);
+        Context->RSSetViewports(1, &Viewport);
+    }
 }
