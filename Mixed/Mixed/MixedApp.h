@@ -33,4 +33,6 @@ private:
     std::shared_ptr<Image> Color;
     std::shared_ptr<Image> Lum;
     std::shared_ptr<Image> Norm;
+    std::shared_ptr<Image> Blurred;
+    std::shared_ptr<Image> Edges1, Edges2;
 };

@@ -31,6 +31,23 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
 MixedApp::MixedApp(HINSTANCE instance)
     : Window(nullptr)
 {
+#if HACK_GENERATE_GAUSSIAN_KERNEL // Move this somewhere else!
+    float o = 0.9f;     // scale
+    float matrix[7]{};  // -3 to 3
+    float sum = 0.f;
+    for (int i = -3; i <= 3; ++i)
+    {
+        matrix[i + 3] = exp(-(i * i) / (2 * o * o)) / sqrtf(2 * XM_PI * (o * o));
+        sum += matrix[i + 3];
+    }
+
+    // Normalize
+    for (int i = -3; i <= 3; ++i)
+    {
+        matrix[i + 3] = matrix[i + 3] / sum;
+    }
+#endif
+
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
     HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&WicFactory));
@@ -45,9 +62,15 @@ MixedApp::MixedApp(HINSTANCE instance)
     Color = Renderer->CreateColorImage(width, height, (const uint32_t*)pixels.get());
     Lum = Renderer->CreateLuminanceImage(width, height, nullptr);
     Norm = Renderer->CreateNormalsImage(width, height, nullptr);
+    Blurred = Renderer->CreateColorImage(width, height, nullptr);
+    Edges1 = Renderer->CreateLuminanceImage(width, height, nullptr);
+    Edges2 = Renderer->CreateLuminanceImage(width, height, nullptr);
 
     Renderer->ColorToLum(Color, Lum);
     Renderer->LumToNormals(Lum, Norm);
+    Renderer->Gaussian(Color, Blurred);
+    Renderer->EdgeDetect(Color, Edges1);
+    Renderer->EdgeDetect(Blurred, Edges2);
 }
 
 MixedApp::~MixedApp()
@@ -89,7 +112,8 @@ void MixedApp::Update()
 
     Renderer->DrawImage(Color, 0, 0, 640, 360);
     Renderer->DrawImage(Lum, 640, 0, 640, 360);
-    Renderer->DrawImage(Norm, 0, 360, 640, 360);
+    Renderer->DrawImage(Edges1, 0, 360, 640, 360);
+    Renderer->DrawImage(Edges2, 640, 360, 640, 360);
 
     Renderer->Present();
 }

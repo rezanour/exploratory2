@@ -62,11 +62,17 @@ public:
     // Copies the source image to the dest image
     void CopyImage(const std::shared_ptr<Image>& source, const std::shared_ptr<Image>& dest);
 
+    // Perform Gaussian blur on image
+    void Gaussian(const std::shared_ptr<Image>& source, const std::shared_ptr<Image>& dest);
+
     // Reads the source image, converts from color to luminance, and stores it in the dest image
     void ColorToLum(const std::shared_ptr<Image>& source, const std::shared_ptr<Image>& dest);
 
     // Reads the source image, converts from luminance to normals, and stores it in the dest image
     void LumToNormals(const std::shared_ptr<Image>& source, const std::shared_ptr<Image>& dest);
+
+    // Reads the source image, detects edges, and stores it in the dest image
+    void EdgeDetect(const std::shared_ptr<Image>& source, const std::shared_ptr<Image>& dest);
 
     // Reads the source image, converts from depth to normals, and stores it in the dest image
     void DepthToNormals(const std::shared_ptr<Image>& source, const std::shared_ptr<Image>& dest);
@@ -129,4 +135,17 @@ private:
 
     // LumToNorm
     ComPtr<ID3D11PixelShader> LumToNormPS;
+
+    // EdgeDetectColor
+    ComPtr<ID3D11PixelShader> EdgeDetectPS;
+
+    // Gaussian
+    struct GaussianPSConstants
+    {
+        int Direction;  // 0 = horiz, 1 = vert
+        XMINT3 Padding0;
+    };
+
+    ComPtr<ID3D11PixelShader> GaussianPS;
+    ComPtr<ID3D11Buffer> GaussianPS_CB;
 };

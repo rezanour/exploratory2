@@ -9,6 +9,8 @@
 #include "ColorToLum_ps.h"
 #include "DrawFloatTex_ps.h"
 #include "LumToNorm_ps.h"
+#include "Gaussian_ps.h"
+#include "EdgeDetect_ps.h"
 
 //=============================================================================
 // Renderer
@@ -91,9 +93,43 @@ void Renderer::CopyImage(const std::shared_ptr<Image>& source, const std::shared
     Context->Draw(6, 0);
 }
 
+void Renderer::Gaussian(const std::shared_ptr<Image>& source, const std::shared_ptr<Image>& dest)
+{
+    // Really inefficient!
+    std::shared_ptr<Image> scratch = CreateColorImage(source->Width, source->Height, nullptr);
+
+    // horiz pass
+    BindFullScreenQuad(GaussianPS, scratch);
+
+    GaussianPSConstants constants{};
+    constants.Direction = 0; // Horizontal
+    Context->UpdateSubresource(GaussianPS_CB.Get(), 0, nullptr, &constants, sizeof(constants), 0);
+    Context->PSSetConstantBuffers(0, 1, GaussianPS_CB.GetAddressOf());
+
+    Context->PSSetShaderResources(0, 1, source->SRV.GetAddressOf());
+    Context->Draw(6, 0);
+
+    // vert pass
+    BindFullScreenQuad(GaussianPS, dest);
+
+    constants.Direction = 1; // Vertical
+    Context->UpdateSubresource(GaussianPS_CB.Get(), 0, nullptr, &constants, sizeof(constants), 0);
+    Context->PSSetConstantBuffers(0, 1, GaussianPS_CB.GetAddressOf());
+
+    Context->PSSetShaderResources(0, 1, scratch->SRV.GetAddressOf());
+    Context->Draw(6, 0);
+}
+
 void Renderer::ColorToLum(const std::shared_ptr<Image>& source, const std::shared_ptr<Image>& dest)
 {
     BindFullScreenQuad(ColorToLumPS, dest);
+    Context->PSSetShaderResources(0, 1, source->SRV.GetAddressOf());
+    Context->Draw(6, 0);
+}
+
+void Renderer::EdgeDetect(const std::shared_ptr<Image>& source, const std::shared_ptr<Image>& dest)
+{
+    BindFullScreenQuad(EdgeDetectPS, dest);
     Context->PSSetShaderResources(0, 1, source->SRV.GetAddressOf());
     Context->Draw(6, 0);
 }
@@ -252,6 +288,21 @@ void Renderer::InitializeGraphics(HWND targetWindow)
     // LumToNorm
     hr = Device->CreatePixelShader(LumToNorm_ps, sizeof(LumToNorm_ps), nullptr, &LumToNormPS);
     CHECKHR(hr, L"CreatePixelShader failed. hr = 0x%08x.", hr);
+
+    // EdgeDetect
+    hr = Device->CreatePixelShader(EdgeDetect_ps, sizeof(EdgeDetect_ps), nullptr, &EdgeDetectPS);
+    CHECKHR(hr, L"CreatePixelShader failed. hr = 0x%08x.", hr);
+
+    // Gaussian
+    hr = Device->CreatePixelShader(Gaussian_ps, sizeof(Gaussian_ps), nullptr, &GaussianPS);
+    CHECKHR(hr, L"CreatePixelShader failed. hr = 0x%08x.", hr);
+
+    bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    bd.ByteWidth = sizeof(GaussianPSConstants);
+    bd.StructureByteStride = bd.ByteWidth;
+
+    hr = Device->CreateBuffer(&bd, nullptr, &GaussianPS_CB);
+    CHECKHR(hr, L"CreateBuffer failed. hr = 0x%08x.", hr);
 
     // Configure shared pipeline
     static const uint32_t stride = sizeof(QuadVertex);
