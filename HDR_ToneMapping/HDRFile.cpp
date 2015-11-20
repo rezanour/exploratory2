@@ -90,10 +90,32 @@ ComPtr<ID3D11Texture2D> HDRLoadImage(const ComPtr<ID3D11Device>& device, const w
         FAIL(L"Non RLE path not supported yet.");
     }
 
+#pragma pack (push, 1)
+    struct float4
+    {
+        float r, g, b, a;
+    };
+#pragma pack (pop)
+
+    std::unique_ptr<float4[]> expanded(new float4[width * height]);
+    memset(expanded.get(), 0, sizeof(float4) * width * height);
+    for (uint32_t i = 0; i < width * height; ++i)
+    {
+        uint32_t exp = (pixels[i] & 0xFF000000) >> 24;
+        if (exp != 0)
+        {
+            static const int exposure_hack = 6; // default 8 in ray sample
+            double f = ldexp(1.0, (int32_t)exp - (128 + exposure_hack));
+            expanded[i].r = (float)(((pixels[i] & 0x000000FF) + 0.5f) * f);
+            expanded[i].g = (float)((((pixels[i] & 0x0000FF00) >> 8) + 0.5f) * f);
+            expanded[i].b = (float)((((pixels[i] & 0x00FF0000) >> 16) + 0.5f) * f);
+        }
+    }
+
     D3D11_TEXTURE2D_DESC td{};
     td.ArraySize = 1;
     td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    td.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
     td.Width = width;
     td.Height = height;
     td.MipLevels = 1;
@@ -101,8 +123,8 @@ ComPtr<ID3D11Texture2D> HDRLoadImage(const ComPtr<ID3D11Device>& device, const w
     td.Usage = D3D11_USAGE_DEFAULT;
 
     D3D11_SUBRESOURCE_DATA init{};
-    init.pSysMem = pixels.get();
-    init.SysMemPitch = width * sizeof(uint32_t);
+    init.pSysMem = expanded.get();
+    init.SysMemPitch = width * sizeof(float4);
     init.SysMemSlicePitch = init.SysMemPitch * height;
 
     ComPtr<ID3D11Texture2D> texture;
@@ -240,10 +262,11 @@ void DecodeRLENew(const char* pCompressed, const char* pEnd, uint32_t* pixels, u
 
                     for (int32_t rep = 0; rep < repeat; ++rep)
                     {
-                        pixels[row * width + iScan] |= (uint32_t)*p << shifts[channel];
+                        pixels[row * width + iScan + rep] |= (uint32_t)*p << shifts[channel];
                         ++p;
-                        ++iScan;
                     }
+
+                    iScan += repeat;
                 }
             }
 

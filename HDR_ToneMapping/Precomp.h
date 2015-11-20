@@ -10,3 +10,5 @@ using Microsoft::WRL::ComPtr;
 #include <assert.h>
 
 #include <memory>
+
+#include <DirectXTex.h>

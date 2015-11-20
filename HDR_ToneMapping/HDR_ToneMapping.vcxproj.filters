@@ -27,6 +27,9 @@
     <ClCompile Include="HDRFile.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Graphics.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Precomp.h">
@@ -38,10 +41,32 @@
     <ClInclude Include="HDRFile.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Graphics.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="memorial.hdr">
       <Filter>Resource Files</Filter>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="DrawQuad_vs.hlsl">
+      <Filter>Resource Files</Filter>
+    </FxCompile>
+    <FxCompile Include="ToLuminance_ps.hlsl">
+      <Filter>Resource Files</Filter>
+    </FxCompile>
+    <FxCompile Include="DrawTexture_ps.hlsl">
+      <Filter>Resource Files</Filter>
+    </FxCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="Habib_House_Med.dds">
+      <Filter>Resource Files</Filter>
+    </Image>
+    <Image Include="FilmLut.tga">
+      <Filter>Resource Files</Filter>
+    </Image>
   </ItemGroup>
 </Project>

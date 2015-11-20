@@ -1,23 +1,20 @@
 #include "Precomp.h"
-#include "Debug.h"
+#include "Graphics.h"
 #include "HDRFile.h"
+#include "Debug.h"
+
+using namespace DirectX;
 
 static const wchar_t AppName[] = L"HDR_ToneMapping";
 static const uint32_t ScreenWidth = 1280;
 static const uint32_t ScreenHeight = 720;
 
 static HWND Window;
-ComPtr<ID3D11Device> Device;
-ComPtr<ID3D11DeviceContext> Context;
-ComPtr<IDXGISwapChain> SwapChain;
-ComPtr<ID3D11Texture2D> BackBuffer;
+static float Exposure = 16.f;
 
 static void AppStartup(HINSTANCE instance);
 static void AppShutdown();
 static LRESULT CALLBACK WinProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
-
-static void GraphicsStartup(HWND hwnd);
-static void GraphicsShutdown();
 
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
 {
@@ -27,9 +24,30 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
     ShowWindow(Window, SW_SHOW);
     UpdateWindow(Window);
 
-    ComPtr<ID3D11Texture2D> image = HDRLoadImage(Device, L"memorial.hdr");
+    TexMetadata metadata;
+    ScratchImage scratchImage;
+    HRESULT hr = LoadFromDDSFile(L"Habib_House_Med.dds", DDS_FLAGS_NONE, &metadata, scratchImage);
+    FAIL_IF_FALSE(SUCCEEDED(hr), L"Failed to open HDR file. 0x%08x", hr);
 
-    HRESULT hr = S_OK;
+    ComPtr<ID3D11Texture2D> image;// = HDRLoadImage(GraphicsGetDevice(), L"memorial.hdr");
+    ComPtr<ID3D11Resource> resource;
+    hr = CreateTexture(GraphicsGetDevice().Get(), scratchImage.GetImages(), scratchImage.GetImageCount(), metadata, &resource);
+    FAIL_IF_FALSE(SUCCEEDED(hr), L"Failed to open HDR file. 0x%08x", hr);
+
+    resource.As(&image);
+
+    ComPtr<ID3D11ShaderResourceView> srv;
+    hr = GraphicsGetDevice()->CreateShaderResourceView(image.Get(), nullptr, &srv);
+    FAIL_IF_FALSE(SUCCEEDED(hr), L"Failed to create SRV to image. 0x%08x", hr);
+
+    RECT dest{};
+    //D3D11_TEXTURE2D_DESC desc{};
+    //image->GetDesc(&desc);
+    //dest.right = desc.Width;
+    //dest.bottom = desc.Height;
+    dest.right = ScreenWidth;
+    dest.bottom = ScreenHeight;
+
     MSG msg{};
     while (msg.message != WM_QUIT)
     {
@@ -41,11 +59,9 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
         else
         {
             // Idle
-            Context->CopySubresourceRegion(BackBuffer.Get(), 0, 0, 0, 0,
-                image.Get(), 0, nullptr);
-
-            hr = SwapChain->Present(1, 0);
-            FAIL_IF_FALSE(SUCCEEDED(hr), L"Present failed. 0x%08x", hr);
+            GraphicsClear();
+            GraphicsDrawQuad(&dest, srv);
+            GraphicsPresent();
         }
     }
 
@@ -98,43 +114,38 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             PostQuitMessage(0);
         }
+        else if (wParam == '0')
+        {
+            GraphicsSetOperator(ToneMappingOperator::None);
+        }
+        else if (wParam == '1')
+        {
+            GraphicsSetOperator(ToneMappingOperator::Linear);
+        }
+        else if (wParam == '2')
+        {
+            GraphicsSetOperator(ToneMappingOperator::ReinhardRGB);
+        }
+        else if (wParam == '3')
+        {
+            GraphicsSetOperator(ToneMappingOperator::ReinhardYOnly);
+        }
+        else if (wParam == 'G')
+        {
+            GraphicsEnableGamma(!GraphicsGammaEnabled());
+        }
+        else if (wParam == VK_UP)
+        {
+            Exposure += 1.f;
+            GraphicsSetExposure(Exposure);
+        }
+        else if (wParam == VK_DOWN)
+        {
+            Exposure -= 1.f;
+            GraphicsSetExposure(Exposure);
+        }
         break;
     }
 
     return DefWindowProc(hwnd, msg, wParam, lParam);
-}
-
-void GraphicsStartup(HWND hwnd)
-{
-    DXGI_SWAP_CHAIN_DESC scd{};
-    scd.BufferCount = 2;
-    scd.BufferDesc.Width = ScreenWidth;
-    scd.BufferDesc.Height = ScreenHeight;
-    scd.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    scd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    scd.OutputWindow = hwnd;
-    scd.SampleDesc.Count = 1;
-    scd.Windowed = TRUE;
-
-    D3D_FEATURE_LEVEL featureLevel = D3D_FEATURE_LEVEL_11_0;
-    UINT flags = 0;
-
-#ifdef DEBUG
-    flags = D3D11_CREATE_DEVICE_DEBUG;
-#endif
-
-    HRESULT hr = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr,
-        flags, &featureLevel, 1, D3D11_SDK_VERSION, &scd, &SwapChain, &Device, nullptr, &Context);
-    FAIL_IF_FALSE(SUCCEEDED(hr), L"D3D11CreateDeviceAndSwapChain failed. 0x%08x", hr);
-
-    hr = SwapChain->GetBuffer(0, IID_PPV_ARGS(&BackBuffer));
-    FAIL_IF_FALSE(SUCCEEDED(hr), L"SwapChain GetBuffer failed. 0x%08x", hr);
-}
-
-void GraphicsShutdown()
-{
-    BackBuffer = nullptr;
-    SwapChain = nullptr;
-    Context = nullptr;
-    Device = nullptr;
 }
