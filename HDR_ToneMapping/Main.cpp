@@ -11,6 +11,7 @@ static const uint32_t ScreenHeight = 720;
 
 static HWND Window;
 static float Exposure = 16.f;
+static float HighPassThreshold = 0.1f;
 
 static void AppStartup(HINSTANCE instance);
 static void AppShutdown();
@@ -134,6 +135,10 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             GraphicsEnableGamma(!GraphicsGammaEnabled());
         }
+        else if (wParam == 'B')
+        {
+            GraphicsEnableHighPassBlur(!GraphicsHighPassBlurEnabled());
+        }
         else if (wParam == VK_UP)
         {
             Exposure += 1.f;
@@ -143,6 +148,16 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         {
             Exposure -= 1.f;
             GraphicsSetExposure(Exposure);
+        }
+        else if (wParam == VK_LEFT)
+        {
+            HighPassThreshold -= 0.025f;
+            GraphicsSetHighPassThreshold(HighPassThreshold);
+        }
+        else if (wParam == VK_RIGHT)
+        {
+            HighPassThreshold += 0.025f;
+            GraphicsSetHighPassThreshold(HighPassThreshold);
         }
         break;
     }

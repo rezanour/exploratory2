@@ -60,6 +60,12 @@
     <FxCompile Include="DrawTexture_ps.hlsl">
       <Filter>Resource Files</Filter>
     </FxCompile>
+    <FxCompile Include="HighPass_ps.hlsl">
+      <Filter>Resource Files</Filter>
+    </FxCompile>
+    <FxCompile Include="Blur_ps.hlsl">
+      <Filter>Resource Files</Filter>
+    </FxCompile>
   </ItemGroup>
   <ItemGroup>
     <Image Include="Habib_House_Med.dds">

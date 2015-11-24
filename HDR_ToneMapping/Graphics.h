@@ -20,5 +20,8 @@ void GraphicsSetOperator(ToneMappingOperator op);
 void GraphicsEnableGamma(bool enable);
 bool GraphicsGammaEnabled();
 void GraphicsSetExposure(float exposure);
+void GraphicsSetHighPassThreshold(float threshold);
+void GraphicsEnableHighPassBlur(bool enable);
+bool GraphicsHighPassBlurEnabled();
 
 void GraphicsDrawQuad(const RECT* dest, const ComPtr<ID3D11ShaderResourceView>& texture);

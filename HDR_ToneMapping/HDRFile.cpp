@@ -104,7 +104,7 @@ ComPtr<ID3D11Texture2D> HDRLoadImage(const ComPtr<ID3D11Device>& device, const w
         uint32_t exp = (pixels[i] & 0xFF000000) >> 24;
         if (exp != 0)
         {
-            static const int exposure_hack = 6; // default 8 in ray sample
+            static const int exposure_hack = 8; // default 8 in ray sample
             double f = ldexp(1.0, (int32_t)exp - (128 + exposure_hack));
             expanded[i].r = (float)(((pixels[i] & 0x000000FF) + 0.5f) * f);
             expanded[i].g = (float)((((pixels[i] & 0x0000FF00) >> 8) + 0.5f) * f);

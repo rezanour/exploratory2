@@ -1,4 +1,5 @@
-Texture2D SourceTexture;
+Texture2D SourceTexture : register(t0);
+Texture2D HighPassTexture : register(t1);
 sampler SourceSampler;
 
 struct Vertex
@@ -44,6 +45,9 @@ static float3 YUVtoRGB(float3 input)
 float4 main(Vertex input) : SV_TARGET
 {
     float4 texColor = SourceTexture.Sample(SourceSampler, input.TexCoord);
+    float3 highPass = HighPassTexture.SampleLevel(SourceSampler, input.TexCoord, 8).xyz;
+
+    highPass *= 3;
 
     if (Operator == 1)      // Linear, hard coded exposure
     {
@@ -62,14 +66,10 @@ float4 main(Vertex input) : SV_TARGET
         texColor.rgb = YUVtoRGB(texColor.rgb);
     }
 
-    float3 result;
+    float3 result = texColor.rgb + highPass;
     if (PerformGamma)
     {
-        result = pow(texColor.rgb, 1 / 2.2);    // Gamma
-    }
-    else
-    {
-        result = texColor.rgb;
+        result = pow(result, 1 / 2.2);    // Gamma
     }
 
     return float4(result, 1);
