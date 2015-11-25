@@ -64,7 +64,7 @@ ComPtr<ID3D11Texture2D> HDRLoadImage(const ComPtr<ID3D11Device>& device, const w
     uint32_t width = 0, height = 0;
     char xAxisString[3]{};
     char yAxisString[3]{};
-    sscanf_s(line, "%s %u %s %u", yAxisString, (int)_countof(yAxisString), &height, xAxisString, (int)_countof(xAxisString), &width);
+    sscanf_s(line, "%s %u %s %u", yAxisString, _countof(yAxisString), &height, xAxisString, _countof(xAxisString), &width);
     xAxis = xAxisString[0] == '-' ? -xAxis : xAxis;
     yAxis = yAxisString[0] == '-' ? -yAxis : yAxis;
 
