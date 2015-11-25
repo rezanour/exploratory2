@@ -69,6 +69,8 @@ float4 main(Vertex input) : SV_TARGET
     }
     else if (Operator == 4) // Haarm-Peter Dulker's Curve (Filmic)
     {
+        texColor.rgb *= Exposure;
+
         float3 ld = 0.002;
         float linReference = 0.18;
         float logReference = 444;
@@ -88,7 +90,7 @@ float4 main(Vertex input) : SV_TARGET
     }
 
     float3 result = texColor.rgb + highPass;
-    if (PerformGamma)
+    if (Operator != 4 && PerformGamma)
     {
         result = pow(result, 1 / 2.2);    // Gamma
     }
