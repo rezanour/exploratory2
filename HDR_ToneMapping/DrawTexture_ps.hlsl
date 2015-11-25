@@ -1,5 +1,6 @@
 Texture2D SourceTexture : register(t0);
 Texture2D HighPassTexture : register(t1);
+Texture2D FilmLut : register(t2);
 sampler SourceSampler;
 
 struct Vertex
@@ -15,6 +16,7 @@ cbuffer Constants
     // 1 = Hard coded fixed exposure
     // 2 = Reinhard RGB
     // 3 = Reinhard Y only
+    // 4 = Haarm-Peter Dulker (Filmic)
     uint Operator;
     float Exposure;
     uint PerformGamma;
@@ -64,6 +66,25 @@ float4 main(Vertex input) : SV_TARGET
         texColor.rgb = RGBtoYUV(texColor.rgb);
         texColor.r = texColor.r / (1 + texColor.r);
         texColor.rgb = YUVtoRGB(texColor.rgb);
+    }
+    else if (Operator == 4) // Haarm-Peter Dulker's Curve (Filmic)
+    {
+        float3 ld = 0.002;
+        float linReference = 0.18;
+        float logReference = 444;
+        float logGamma = 0.45;
+        float3 LogColor = (log10(0.4*texColor.rgb / linReference) / ld*logGamma + logReference) / 1023.f;
+        LogColor = saturate(LogColor);
+
+        float FilmLutWidth = 256;
+        float Padding = 0.5 / FilmLutWidth;
+
+        // Apply response and color grading for target display
+        float3 finalColor;
+        finalColor.r = FilmLut.Sample(SourceSampler, float2(lerp(Padding, 1 - Padding, LogColor.r), 0.5)).x;
+        finalColor.g = FilmLut.Sample(SourceSampler, float2(lerp(Padding, 1 - Padding, LogColor.g), 0.5)).x;
+        finalColor.b = FilmLut.Sample(SourceSampler, float2(lerp(Padding, 1 - Padding, LogColor.b), 0.5)).x;
+        texColor.rgb = finalColor;
     }
 
     float3 result = texColor.rgb + highPass;

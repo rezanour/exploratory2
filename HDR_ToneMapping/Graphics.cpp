@@ -17,6 +17,7 @@ static ComPtr<ID3D11RenderTargetView> HighPassRTV;
 static ComPtr<ID3D11ShaderResourceView> HighPassSRV;
 static ComPtr<ID3D11RenderTargetView> BlurRTV;
 static ComPtr<ID3D11ShaderResourceView> BlurSRV;
+static ComPtr<ID3D11ShaderResourceView> FilmLutSRV;
 static ComPtr<ID3D11InputLayout> InputLayout;
 static ComPtr<ID3D11VertexShader> DrawQuadVS;
 static ComPtr<ID3D11PixelShader> DrawTexturePS;
@@ -133,6 +134,7 @@ void GraphicsShutdown()
     DrawTexturePS = nullptr;
     DrawQuadVS = nullptr;
     InputLayout = nullptr;
+    FilmLutSRV = nullptr;
     BlurSRV = nullptr;
     BlurRTV = nullptr;
     HighPassRTV = nullptr;
@@ -164,6 +166,12 @@ void GraphicsPresent()
 void GraphicsSetOperator(ToneMappingOperator op)
 {
     TheDrawTextureConstants.Operator = (uint32_t)op;
+}
+
+void GraphicsSetFilmLut(const ComPtr<ID3D11ShaderResourceView>& filmLut)
+{
+    FilmLutSRV = filmLut;
+    Context->PSSetShaderResources(2, 1, FilmLutSRV.GetAddressOf());
 }
 
 void GraphicsEnableGamma(bool enable)

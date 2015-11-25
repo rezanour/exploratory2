@@ -54,9 +54,6 @@
     <FxCompile Include="DrawQuad_vs.hlsl">
       <Filter>Resource Files</Filter>
     </FxCompile>
-    <FxCompile Include="ToLuminance_ps.hlsl">
-      <Filter>Resource Files</Filter>
-    </FxCompile>
     <FxCompile Include="DrawTexture_ps.hlsl">
       <Filter>Resource Files</Filter>
     </FxCompile>

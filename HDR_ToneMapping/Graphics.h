@@ -5,7 +5,8 @@ enum class ToneMappingOperator
     None = 0,
     Linear,
     ReinhardRGB,
-    ReinhardYOnly
+    ReinhardYOnly,
+    Filmic,
 };
 
 void GraphicsStartup(HWND window);
@@ -17,6 +18,7 @@ void GraphicsClear();
 void GraphicsPresent();
 
 void GraphicsSetOperator(ToneMappingOperator op);
+void GraphicsSetFilmLut(const ComPtr<ID3D11ShaderResourceView>& filmLut);
 void GraphicsEnableGamma(bool enable);
 bool GraphicsGammaEnabled();
 void GraphicsSetExposure(float exposure);

@@ -41,6 +41,24 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
     hr = GraphicsGetDevice()->CreateShaderResourceView(image.Get(), nullptr, &srv);
     FAIL_IF_FALSE(SUCCEEDED(hr), L"Failed to create SRV to image. 0x%08x", hr);
 
+    // FilmLut
+    scratchImage.Release();
+    hr = LoadFromTGAFile(L"FilmLut.tga", &metadata, scratchImage);
+    FAIL_IF_FALSE(SUCCEEDED(hr), L"Failed to open FilmLut file. 0x%08x", hr);
+
+    resource = nullptr;
+    hr = CreateTexture(GraphicsGetDevice().Get(), scratchImage.GetImages(), scratchImage.GetImageCount(), metadata, &resource);
+    FAIL_IF_FALSE(SUCCEEDED(hr), L"Failed to open HDR file. 0x%08x", hr);
+
+    image = nullptr;
+    resource.As(&image);
+
+    ComPtr<ID3D11ShaderResourceView> LutSRV;
+    hr = GraphicsGetDevice()->CreateShaderResourceView(image.Get(), nullptr, &LutSRV);
+    FAIL_IF_FALSE(SUCCEEDED(hr), L"Failed to create SRV to image. 0x%08x", hr);
+
+    GraphicsSetFilmLut(LutSRV);
+
     RECT dest{};
     //D3D11_TEXTURE2D_DESC desc{};
     //image->GetDesc(&desc);
@@ -130,6 +148,10 @@ LRESULT CALLBACK WinProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
         else if (wParam == '3')
         {
             GraphicsSetOperator(ToneMappingOperator::ReinhardYOnly);
+        }
+        else if (wParam == '4')
+        {
+            GraphicsSetOperator(ToneMappingOperator::Filmic);
         }
         else if (wParam == 'G')
         {
