@@ -155,6 +155,8 @@ void GraphicsClear()
 {
     static const float clearColor[] = { 0, 0, 0, 1 };
     Context->ClearRenderTargetView(BackBufferRTV.Get(), clearColor);
+    Context->ClearRenderTargetView(HighPassRTV.Get(), clearColor);
+    Context->ClearRenderTargetView(BlurRTV.Get(), clearColor);
 }
 
 void GraphicsPresent()
