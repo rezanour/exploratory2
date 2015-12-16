@@ -10,8 +10,8 @@
 using namespace Microsoft::WRL;
 
 static const wchar_t WinClassName[] = L"rz_rast";
-static const uint32_t OutputWidth = 1280;
-static const uint32_t OutputHeight = 720;
+static const uint32_t OutputWidth = 1024;
+static const uint32_t OutputHeight = 1024;
 static const uint32_t MaxFramesInFlight = 3;
 
 static HINSTANCE Instance;
