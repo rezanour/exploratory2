@@ -88,6 +88,7 @@ struct tile_bin
     int num_triangles;
 };
 
+static const int target_tile_size = 256; // must break down to 4x4 evenly
 static int bin_hsize;
 static int bin_vsize;
 static int num_hbins;
@@ -97,6 +98,7 @@ static tile_bin* bins;
 static int render_target_width;
 static int render_target_height;
 static uint32_t* render_target;
+static int render_target_pitch_in_pixels;
 
 static void rz_init_bins()
 {
@@ -188,8 +190,14 @@ static void rz_process_sub_tile(
 
     for (int y = top_left_y; y < top_left_y + height; y += vsize)
     {
+        if (y >= render_target_height)
+            break;
+
         for (int x = top_left_x; x < top_left_x + width; x += hsize)
         {
+            if (x >= render_target_width)
+                break;
+
             // trivial reject against edge1?
             if (rz_side_of_edge(p1, edge1, float2(x + off_h1, y + off_v1)) > 0.f)
             {
@@ -230,7 +238,7 @@ static void rz_process_sub_tile(
                 // rasterize the pixel!
 
 #if 0 // quick test
-                render_target[y * render_target_width + x] = 0xFFFF0000; // blue
+                render_target[y * render_target_pitch_in_pixels + x] = 0xFFFF0000; // blue
 #else
                 VertexOutput frag;
                 if (!LerpFragment((float)x, (float)y, (const VertexOutput*)triangle, (const VertexOutput*)((const uint8_t*)triangle + stride), (const VertexOutput*)((const uint8_t*)triangle + 2 * stride), &frag))
@@ -242,7 +250,7 @@ static void rz_process_sub_tile(
                 PixelShader(frag, fragColor);
 
                 // convert to RGBA
-                render_target[y * render_target_width + x] =
+                render_target[y * render_target_pitch_in_pixels + x] =
                     (uint32_t)((uint8_t)(fragColor.w * 255.f)) << 24 |
                     (uint32_t)((uint8_t)(fragColor.z * 255.f)) << 16 |
                     (uint32_t)((uint8_t)(fragColor.y * 255.f)) << 8 |
@@ -303,7 +311,7 @@ static void rz_rasterize_bins()
 // End of Larrabee style rasterizing (except below where we call this instead of other rasterization + pixel shader code)
 //=================================================================================================
 
-bool RastStartup()
+bool RastStartup(uint32_t width, uint32_t height)
 {
     // Fill in vertices for triangle
     Vertices.push_back(Vertex(float3(-0.5f, -0.5f, 0.f), float3(0.f, 0.f, 1.f)));
@@ -319,9 +327,17 @@ bool RastStartup()
     XMStoreFloat4x4(&temp, XMMatrixLookAtLH(XMVectorSet(0.f, 0.f, -1.f, 1.f), XMVectorSet(0.f, 0.f, 0.f, 1.f), XMVectorSet(0.f, 1.f, 0.f, 0.f)));
     memcpy_s(&ShaderConstants.ViewMatrix, sizeof(matrix4x4), &temp, sizeof(XMFLOAT4X4));
 
-    XMStoreFloat4x4(&temp, XMMatrixPerspectiveFovLH(XMConvertToRadians(90.f), 1024.f / 1024.f, 0.1f, 100.f));
+    XMStoreFloat4x4(&temp, XMMatrixPerspectiveFovLH(XMConvertToRadians(90.f), (float)width / height, 0.1f, 100.f));
     memcpy_s(&ShaderConstants.ProjectionMatrix, sizeof(matrix4x4), &temp, sizeof(XMFLOAT4X4));
 
+    render_target_width = (int)width;
+    render_target_height = (int)height;
+    bin_hsize = target_tile_size;
+    bin_vsize = target_tile_size;
+    num_hbins = render_target_width / bin_hsize + (render_target_width % bin_hsize ? 1 : 0);
+    num_vbins = render_target_height / bin_vsize + (render_target_height % bin_vsize ? 1 : 0);
+
+    rz_init_bins();
     return true;
 }
 
@@ -331,13 +347,11 @@ void RastShutdown()
 }
 
 
-bool RenderScene(void* const pOutput, uint32_t width, uint32_t height, uint32_t rowPitch)
+bool RenderScene(void* const pOutput, uint32_t rowPitch)
 {
-#if 0
-    uint32_t pitch = rowPitch / sizeof(uint32_t);
-#endif
+    render_target_pitch_in_pixels = rowPitch / sizeof(uint32_t);
 
-    memset(pOutput, 0, rowPitch * height);
+    memset(pOutput, 0, rowPitch * render_target_height);
 
     XMFLOAT4X4 transform;
     XMStoreFloat4x4(&transform, XMMatrixRotationY(FrameIndex++ * 0.25f));
@@ -359,8 +373,8 @@ bool RenderScene(void* const pOutput, uint32_t width, uint32_t height, uint32_t 
 
         // w divide & convert to viewport (pixels)
         out->Position /= out->Position.w;
-        out->Position.x = (out->Position.x * 0.5f + 0.5f) * width;
-        out->Position.y = (1.f - (out->Position.y * 0.5f + 0.5f)) * height;
+        out->Position.x = (out->Position.x * 0.5f + 0.5f) * render_target_width;
+        out->Position.y = (1.f - (out->Position.y * 0.5f + 0.5f)) * render_target_height;
     }
 
     out = VertOutput.data();
@@ -368,20 +382,6 @@ bool RenderScene(void* const pOutput, uint32_t width, uint32_t height, uint32_t 
     // TODO: Clip
 
     // Rasterize
-
-    static bool bins_inited = false;  // HACK: clean this up and move to init code above
-    if (!bins_inited)
-    {
-        render_target_width = width;
-        render_target_height = height;
-        bin_hsize = render_target_width / 16;
-        bin_vsize = render_target_height / 16;
-        num_hbins = 16;
-        num_vbins = 16;
-
-        rz_init_bins();
-        bins_inited = true;
-    }
 
     render_target = (uint32_t*)pOutput;
 

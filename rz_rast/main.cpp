@@ -10,8 +10,8 @@
 using namespace Microsoft::WRL;
 
 static const wchar_t WinClassName[] = L"rz_rast";
-static const uint32_t OutputWidth = 1024;
-static const uint32_t OutputHeight = 1024;
+static const uint32_t OutputWidth = 1280;
+static const uint32_t OutputHeight = 720;
 static const uint32_t MaxFramesInFlight = 3;
 
 static HINSTANCE Instance;
@@ -51,7 +51,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
         return -2;
     }
 
-    if (!RastStartup())
+    if (!RastStartup(OutputWidth, OutputHeight))
     {
         DXShutdown();
         WinShutdown();
@@ -216,7 +216,7 @@ bool DXDoFrame()
         return false;
     }
 
-    if (!RenderScene(mapped.pData, OutputWidth, OutputHeight, mapped.RowPitch))
+    if (!RenderScene(mapped.pData, mapped.RowPitch))
     {
         Context->Unmap(CPUBuffer[FrameIndex].Get(), 0);
         assert(false);
