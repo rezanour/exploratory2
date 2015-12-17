@@ -27,9 +27,6 @@
     <ClInclude Include="VertexShader.ispc">
       <Filter>Resource Files</Filter>
     </ClInclude>
-    <ClInclude Include="vertex_shader.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="precomp.cpp">
@@ -39,9 +36,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="rz_rast.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="vertex_shader.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

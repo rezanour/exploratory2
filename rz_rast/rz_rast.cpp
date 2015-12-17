@@ -2,14 +2,12 @@
 #include "rz_rast.h"
 #include "rz_math.h"
 
-#include "vertex_shader.h"
-
 #include <vector>
 #include <DirectXMath.h>
 using namespace DirectX;
 
 #define USE_SSE
-#define USE_FULL_PS
+//#define USE_FULL_PS
 #define USE_MT_TILES // multithreaded tile processing
 #define ENABLE_ANIMATION
 
@@ -33,7 +31,7 @@ struct alignas(16) VertexOutput
     float3 Color;
 };
 
-extern void vertex_shader(const VertexInput input[], VertexOutput output[], int num_verts, const Constants& constants);
+static void VertexShader(const VertexInput* input, VertexOutput* output);
 static void PixelShader(const VertexOutput& input, float4& output);
 
 
@@ -52,7 +50,6 @@ static const uint32_t Stride = sizeof(Vertex);
 // Variables
 static Constants ShaderConstants;
 static std::vector<Vertex> Vertices;
-static std::vector<VertexInput> VertInput;
 static std::vector<VertexOutput> VertOutput;
 static uint32_t FrameIndex;
 
@@ -488,7 +485,7 @@ static void rz_rasterize_bins()
 bool RastStartup(uint32_t width, uint32_t height)
 {
     // Fill in vertices for triangle
-    for (float z = 5.f; z >= -5.f; z -= 0.5f)
+    for (float z = 5.f; z >= -5.f; z -= 1.f)
     {
         for (float y = 5.f; y >= -5.f; y -= 0.25f)
         {
@@ -501,7 +498,6 @@ bool RastStartup(uint32_t width, uint32_t height)
         }
     }
 
-    VertInput.resize(Vertices.size());
     VertOutput.resize(Vertices.size());
 
     XMFLOAT4X4 temp;
@@ -589,22 +585,14 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
 
     uint32_t numVerts = (uint32_t)Vertices.size();
     Vertex* v = Vertices.data();
-    VertexInput* in = VertInput.data();
     VertexOutput* out = VertOutput.data();
 
     // Vertex Shader Stage
-    for (uint32_t i = 0; i < numVerts; ++i, ++v, ++in)
-    {
-        in->Position = v->Position;
-        in->Color = v->Color;
-    }
-
-    vertex_shader(VertInput.data(), VertOutput.data(), numVerts, ShaderConstants);
-
-    out = VertOutput.data();
-
     for (uint32_t i = 0; i < numVerts; ++i, ++v, ++out)
     {
+        VertexInput input = { v->Position, v->Color };
+        VertexShader(&input, out);
+
         // w divide & convert to viewport (pixels)
         out->Position /= out->Position.w;
         out->Position.x = (out->Position.x * 0.5f + 0.5f) * render_target_width;
@@ -746,6 +734,15 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
     return true;
 }
 
+void VertexShader(const VertexInput* input, VertexOutput* output)
+{
+    output->Position = float4(input->Position, 1.f);
+    output->Position = mul(ShaderConstants.WorldMatrix, output->Position);
+    output->Position = mul(ShaderConstants.ViewMatrix, output->Position);
+    output->Position = mul(ShaderConstants.ProjectionMatrix, output->Position);
+    output->Color = input->Color;
+}
+
 #ifdef USE_FULL_PS
 void PixelShader(const VertexOutput& input, float4& output)
 {
@@ -795,8 +792,12 @@ bool LerpFragment(float x, float y, const VertexOutput* inA, const VertexOutput*
     float xB = wB.length() * invLenN;
     float xC = wC.length() * invLenN;
 
-    frag->Position = inA->Position * xA + inB->Position * xB + inC->Position * xC;
-    frag->Color = inA->Color * xA + inB->Color * xB + inC->Color * xC;
+    frag->Position.x = inA->Position.x * xA + inB->Position.x * xB + inC->Position.x * xC;
+    frag->Position.y = inA->Position.y * xA + inB->Position.y * xB + inC->Position.y * xC;
+    frag->Position.z = inA->Position.z * xA + inB->Position.z * xB + inC->Position.z * xC;
+    frag->Color.x = inA->Color.x * xA + inB->Color.x * xB + inC->Color.x * xC;
+    frag->Color.y = inA->Color.y * xA + inB->Color.y * xB + inC->Color.y * xC;
+    frag->Color.z = inA->Color.z * xA + inB->Color.z * xB + inC->Color.z * xC;
 
     return true;
 }
