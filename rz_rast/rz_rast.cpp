@@ -6,6 +6,9 @@
 #include <DirectXMath.h>
 using namespace DirectX;
 
+#define USE_SSE
+#define USE_FULL_PS
+
 // Programmable stages
 struct Constants
 {
@@ -66,12 +69,14 @@ static float2 rz_edge_equation(const float2& v1, const float2& v2)
     return float2(v2.y - v1.y, v1.x - v2.x);
 }
 
+#ifndef USE_SSE
 // function returns negative number of point behind edge. Positive if in front, and 0 if on the edge
 static float rz_side_of_edge(const float2& base_vert, const float2& edge_equation, const float2& point)
 {
     float2 diff = point - base_vert;
     return dot(diff, edge_equation);
 }
+#endif
 
 // binning and rasterization
 
@@ -188,6 +193,128 @@ static void rz_process_sub_tile(
         off_v3 = 0.5f;
     }
 
+#ifdef USE_SSE // vectorized version. Does the tile row by row using SSE (4 wide)
+
+    __m128 indices = _mm_set_ps(0.f, 1.f, 2.f, 3.f);
+    __m128 hsizes = _mm_set1_ps((float)hsize);
+    __m128 xoff = _mm_mul_ps(indices, hsizes);
+    __m128 base_corner_x = _mm_add_ps(_mm_set1_ps((float)top_left_x), xoff);
+
+    for (int y = top_left_y; y < top_left_y + height; y += vsize)
+    {
+        if (y >= render_target_height)
+            break;
+
+        __m128 base_corner_y = _mm_set1_ps((float)y);
+
+        // trivial reject against edge1
+
+        // side_of_edge:
+        // float2 diff = point - base_vert;
+        // return dot(diff, edge_equation);
+
+        // float2 diff part
+        // break down to all edge1-adjusted x's, then edge1-adjusted y's
+        // base_vert is p1
+        __m128 adj = _mm_add_ps(base_corner_x, _mm_set1_ps(off_h1));
+        __m128 diffx = _mm_sub_ps(adj, _mm_set1_ps(p1.x));
+        adj = _mm_add_ps(base_corner_y, _mm_set1_ps(off_v1));
+        __m128 diffy = _mm_sub_ps(adj, _mm_set1_ps(p1.y));
+
+        // dot part is broken into muls & adds
+        // m1 = diff.x * edge.x
+        // m2 = diff.y * edge.y
+        // m1 + m2
+        __m128 m1 = _mm_mul_ps(diffx, _mm_set1_ps(edge1.x));
+        __m128 m2 = _mm_mul_ps(diffy, _mm_set1_ps(edge1.y));
+        __m128 dots = _mm_add_ps(m1, m2);
+
+        // if dot is > 0.f, those tiles are rejected.
+        __m128 e1mask = _mm_cmpgt_ps(dots, _mm_setzero_ps());
+
+        // Now, repeat for edge 2
+        adj = _mm_add_ps(base_corner_x, _mm_set1_ps(off_h2));
+        diffx = _mm_sub_ps(adj, _mm_set1_ps(p2.x));
+        adj = _mm_add_ps(base_corner_y, _mm_set1_ps(off_v2));
+        diffy = _mm_sub_ps(adj, _mm_set1_ps(p2.y));
+        m1 = _mm_mul_ps(diffx, _mm_set1_ps(edge2.x));
+        m2 = _mm_mul_ps(diffy, _mm_set1_ps(edge2.y));
+        dots = _mm_add_ps(m1, m2);
+        __m128 e2mask = _mm_cmpgt_ps(dots, _mm_setzero_ps());
+
+        // And edge3
+        adj = _mm_add_ps(base_corner_x, _mm_set1_ps(off_h3));
+        diffx = _mm_sub_ps(adj, _mm_set1_ps(p3.x));
+        adj = _mm_add_ps(base_corner_y, _mm_set1_ps(off_v3));
+        diffy = _mm_sub_ps(adj, _mm_set1_ps(p3.y));
+        m1 = _mm_mul_ps(diffx, _mm_set1_ps(edge3.x));
+        m2 = _mm_mul_ps(diffy, _mm_set1_ps(edge3.y));
+        dots = _mm_add_ps(m1, m2);
+        __m128 e3mask = _mm_cmpgt_ps(dots, _mm_setzero_ps());
+
+        // only elements we keep are the ones that passed all three filters. ie:
+        // mask1 | mask2 | mask3 == 0
+        __m128 mask = _mm_or_ps(e1mask, _mm_or_ps(e2mask, e3mask));
+
+        float fmasks[4]{};
+        _mm_storeu_ps(fmasks, mask);
+
+        if (hsize > 1 && vsize > 1)
+        {
+            // recurse sub tiles
+
+            for (int i = 0; i < 4; ++i) // TODO: vectorize this too
+            {
+                if (fmasks[3 - i] == 0.f)
+                {
+                    rz_process_sub_tile(
+                        triangle,
+                        top_left_x + (hsize * i), y, hsize, vsize,
+                        p1, edge1, off_x1, off_y1,
+                        p2, edge2, off_x2, off_y2,
+                        p3, edge3, off_x3, off_y3);
+                }
+            }
+        }
+        else
+        {
+            // rasterize the pixels!
+
+            for (int i = 0; i < 4; ++i) // TODO: vectorize this too
+            {
+                if (fmasks[3 - i] == 0.f)
+                {
+                    int x = top_left_x + (i * hsize);
+
+                    if (x >= render_target_width)
+                        break;
+
+#ifndef USE_FULL_PS // quick test
+                    render_target[y * render_target_pitch_in_pixels + x] = 0xFFFF0000; // blue
+#else
+                    VertexOutput frag;
+                    if (!LerpFragment((float)x, (float)y, (const VertexOutput*)triangle, (const VertexOutput*)((const uint8_t*)triangle + stride), (const VertexOutput*)((const uint8_t*)triangle + 2 * stride), &frag))
+                    {
+                        continue;
+                    }
+
+                    float4 fragColor;
+                    PixelShader(frag, fragColor);
+
+                    // convert to RGBA
+                    render_target[y * render_target_pitch_in_pixels + x] =
+                        (uint32_t)((uint8_t)(fragColor.w * 255.f)) << 24 |
+                        (uint32_t)((uint8_t)(fragColor.z * 255.f)) << 16 |
+                        (uint32_t)((uint8_t)(fragColor.y * 255.f)) << 8 |
+                        (uint32_t)((uint8_t)(fragColor.x * 255.f));
+#endif // USE_FULL_PS
+                }
+            }
+        }
+    }
+
+#else // USE_SSE
+
     for (int y = top_left_y; y < top_left_y + height; y += vsize)
     {
         if (y >= render_target_height)
@@ -237,7 +364,7 @@ static void rz_process_sub_tile(
             {
                 // rasterize the pixel!
 
-#if 0 // quick test
+#ifndef USE_FULL_PS // quick test
                 render_target[y * render_target_pitch_in_pixels + x] = 0xFFFF0000; // blue
 #else
                 VertexOutput frag;
@@ -255,10 +382,11 @@ static void rz_process_sub_tile(
                     (uint32_t)((uint8_t)(fragColor.z * 255.f)) << 16 |
                     (uint32_t)((uint8_t)(fragColor.y * 255.f)) << 8 |
                     (uint32_t)((uint8_t)(fragColor.x * 255.f));
-#endif
+#endif // USE_FULL_PS
             }
         }
     }
+#endif // USE_SSE
 }
 
 static void rz_rasterize_tile(int row, int col)
@@ -353,10 +481,12 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
 
     memset(pOutput, 0, rowPitch * render_target_height);
 
+#ifdef USE_FULL_PS
     XMFLOAT4X4 transform;
     XMStoreFloat4x4(&transform, XMMatrixRotationY(FrameIndex++ * 0.25f));
     memcpy_s(&ShaderConstants.WorldMatrix, sizeof(matrix4x4), &transform, sizeof(transform));
-    
+#endif
+
     // Serial, simple impl first just to try some ideas. Then will do this right
 
     uint32_t numVerts = (uint32_t)Vertices.size();
@@ -508,6 +638,7 @@ void VertexShader(const VertexInput& input, VertexOutput& output)
     output.Color = input.Color;
 }
 
+#ifdef USE_FULL_PS
 void PixelShader(const VertexOutput& input, float4& output)
 {
     output = float4(input.Color, 1.f);
@@ -561,4 +692,4 @@ bool LerpFragment(float x, float y, const VertexOutput* inA, const VertexOutput*
 
     return true;
 }
-
+#endif
