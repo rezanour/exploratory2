@@ -2,6 +2,8 @@
 #include "rz_rast.h"
 #include "rz_math.h"
 
+#include "vertex_shader.h"
+
 #include <vector>
 #include <DirectXMath.h>
 using namespace DirectX;
@@ -31,7 +33,7 @@ struct alignas(16) VertexOutput
     float3 Color;
 };
 
-static void VertexShader(const VertexInput& input, VertexOutput& output);
+extern void vertex_shader(const VertexInput input[], VertexOutput output[], int num_verts, const Constants& constants);
 static void PixelShader(const VertexOutput& input, float4& output);
 
 
@@ -50,6 +52,7 @@ static const uint32_t Stride = sizeof(Vertex);
 // Variables
 static Constants ShaderConstants;
 static std::vector<Vertex> Vertices;
+static std::vector<VertexInput> VertInput;
 static std::vector<VertexOutput> VertOutput;
 static uint32_t FrameIndex;
 
@@ -498,6 +501,7 @@ bool RastStartup(uint32_t width, uint32_t height)
         }
     }
 
+    VertInput.resize(Vertices.size());
     VertOutput.resize(Vertices.size());
 
     XMFLOAT4X4 temp;
@@ -585,16 +589,22 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
 
     uint32_t numVerts = (uint32_t)Vertices.size();
     Vertex* v = Vertices.data();
+    VertexInput* in = VertInput.data();
     VertexOutput* out = VertOutput.data();
 
     // Vertex Shader Stage
+    for (uint32_t i = 0; i < numVerts; ++i, ++v, ++in)
+    {
+        in->Position = v->Position;
+        in->Color = v->Color;
+    }
+
+    vertex_shader(VertInput.data(), VertOutput.data(), numVerts, ShaderConstants);
+
+    out = VertOutput.data();
+
     for (uint32_t i = 0; i < numVerts; ++i, ++v, ++out)
     {
-        VertexInput input;
-        input.Position = v->Position;
-        input.Color = v->Color;
-        VertexShader(input, *out);
-
         // w divide & convert to viewport (pixels)
         out->Position /= out->Position.w;
         out->Position.x = (out->Position.x * 0.5f + 0.5f) * render_target_width;
@@ -734,16 +744,6 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
 #endif
 
     return true;
-}
-
-
-
-void VertexShader(const VertexInput& input, VertexOutput& output)
-{
-    output.Position = mul(ShaderConstants.WorldMatrix, float4(input.Position, 1.f));
-    output.Position = mul(ShaderConstants.ViewMatrix, output.Position);
-    output.Position = mul(ShaderConstants.ProjectionMatrix, output.Position);
-    output.Color = input.Color;
 }
 
 #ifdef USE_FULL_PS
