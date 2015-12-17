@@ -6,8 +6,9 @@
 #include <DirectXMath.h>
 using namespace DirectX;
 
+#define USE_LRB
 #define USE_SSE
-//#define USE_FULL_PS
+#define USE_FULL_PS
 #define USE_MT_TILES // multithreaded tile processing
 #define ENABLE_ANIMATION
 
@@ -144,8 +145,7 @@ static DWORD CALLBACK rasterizer_thread(PVOID context)
 
 
 
-
-
+#ifdef USE_LRB
 
 static void rz_init_bins()
 {
@@ -482,6 +482,8 @@ static void rz_rasterize_bins()
 // End of Larrabee style rasterizing (except below where we call this instead of other rasterization + pixel shader code)
 //=================================================================================================
 
+#endif // USE_LRB
+
 bool RastStartup(uint32_t width, uint32_t height)
 {
     // Fill in vertices for triangle
@@ -517,6 +519,7 @@ bool RastStartup(uint32_t width, uint32_t height)
     num_hbins = render_target_width / bin_hsize + (render_target_width % bin_hsize ? 1 : 0);
     num_vbins = render_target_height / bin_vsize + (render_target_height % bin_vsize ? 1 : 0);
 
+#ifdef USE_LRB
     rz_init_bins();
 
 #ifdef USE_MT_TILES
@@ -536,11 +539,14 @@ bool RastStartup(uint32_t width, uint32_t height)
     }
 
 #endif
+
+#endif // USE_LRB
     return true;
 }
 
 void RastShutdown()
 {
+#ifdef USE_LRB
 #ifdef USE_MT_TILES
 
     SetEvent(signal_shutdown);
@@ -560,6 +566,7 @@ void RastShutdown()
 #endif
 
     rz_destroy_bins();
+#endif // USE_LRB
 }
 
 
@@ -607,6 +614,7 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
 
     render_target = (uint32_t*)pOutput;
 
+#ifdef USE_LRB
     rz_clear_bins();
     rz_bin_triangles((float3*)&out->Position, numVerts / 3);
 
@@ -625,7 +633,8 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
     rz_rasterize_bins();
 #endif
 
-#if 0
+#else // USE_LRB
+
     for (uint32_t i = 0; i < numVerts / 3; ++i, out += 3)
     {
         VertexOutput* verts[3] = { out, out + 1, out + 2 };
@@ -669,9 +678,13 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
 
         for (int y = (int)ytop; y < (int)ymid; ++y)
         {
+            if (y < 0 || y >= render_target_height) continue;
+
             // rasterize span from (x1,y) to (x2,y)
             for (int x = (int)x1; x < (int)x2; ++x)
             {
+                if (x < 0 || x >= render_target_width) continue;
+
                 VertexOutput frag;
                 if (!LerpFragment((float)x, (float)y, out, out + 1, out + 2, &frag))
                 {
@@ -681,7 +694,7 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
                 PixelShader(frag, fragColor);
 
                 // convert to RGBA
-                ((uint32_t* const)pOutput)[y * pitch + x] =
+                ((uint32_t* const)pOutput)[y * render_target_pitch_in_pixels + x] =
                     (uint32_t)((uint8_t)(fragColor.w * 255.f)) << 24 |
                     (uint32_t)((uint8_t)(fragColor.z * 255.f)) << 16 |
                     (uint32_t)((uint8_t)(fragColor.y * 255.f)) << 8 |
@@ -706,9 +719,13 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
 
         for (int y = (int)ymid; y < (int)ybottom; ++y)
         {
+            if (y < 0 || y >= render_target_height) continue;
+
             // rasterize span from (x1,y) to (x2,y)
             for (int x = (int)x1; x < (int)x2; ++x)
             {
+                if (x < 0 || x >= render_target_width) continue;
+
                 VertexOutput frag;
                 if (!LerpFragment((float)x, (float)y, out, out + 1, out + 2, &frag))
                 {
@@ -718,7 +735,7 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
                 PixelShader(frag, fragColor);
 
                 // convert to RGBA
-                ((uint32_t* const)pOutput)[y * pitch + x] =
+                ((uint32_t* const)pOutput)[y * render_target_pitch_in_pixels + x] =
                     (uint32_t)((uint8_t)(fragColor.w * 255.f)) << 24 |
                     (uint32_t)((uint8_t)(fragColor.z * 255.f)) << 16 |
                     (uint32_t)((uint8_t)(fragColor.y * 255.f)) << 8 |
@@ -729,7 +746,7 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
             x2 += step2;
         }
     }
-#endif
+#endif  // USE_LRB
 
     return true;
 }
