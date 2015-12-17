@@ -7,7 +7,9 @@
 using namespace DirectX;
 
 #define USE_SSE
-#define USE_FULL_PS
+//#define USE_FULL_PS
+//#define USE_MT_TILES // multithreaded tile processing
+#define ENABLE_ANIMATION
 
 // Programmable stages
 struct Constants
@@ -55,11 +57,6 @@ static bool LerpFragment(float x, float y, const VertexOutput* a, const VertexOu
 
 
 
-
-
-
-
-
 //=================================================================================================
 // Trying out Larrabee style of rasterizing here....
 
@@ -80,7 +77,7 @@ static float rz_side_of_edge(const float2& base_vert, const float2& edge_equatio
 
 // binning and rasterization
 
-static const int MAX_TRIANGLES_PER_BIN = 512;
+static const int MAX_TRIANGLES_PER_BIN = 65536;
 static int stride = sizeof(Vertex);
 static int position_offset;
 
@@ -104,6 +101,48 @@ static int render_target_width;
 static int render_target_height;
 static uint32_t* render_target;
 static int render_target_pitch_in_pixels;
+
+static void rz_rasterize_tile(int row, int col);
+
+#ifdef USE_MT_TILES
+
+#define NOMINMAX
+#include <Windows.h>
+HANDLE signal_work;
+HANDLE signal_shutdown;
+HANDLE* threads;
+int num_threads;
+volatile long current_tile;
+long num_tiles;
+
+static DWORD CALLBACK rasterizer_thread(PVOID context)
+{
+    UNREFERENCED(context);
+
+    HANDLE signals[]{ signal_shutdown, signal_work };
+
+    DWORD result = WaitForMultipleObjects(_countof(signals), signals, FALSE, INFINITE);
+    while (result != WAIT_OBJECT_0)
+    {
+        long my_tile = InterlockedIncrement(&current_tile);
+        while (my_tile < num_tiles)
+        {
+            rz_rasterize_tile(my_tile / num_hbins, my_tile % num_hbins);
+            my_tile = InterlockedIncrement(&current_tile);
+        }
+
+        result = WaitForMultipleObjects(_countof(signals), signals, FALSE, INFINITE);
+    }
+
+    return 0;
+}
+
+#endif
+
+
+
+
+
 
 static void rz_init_bins()
 {
@@ -389,7 +428,7 @@ static void rz_process_sub_tile(
 #endif // USE_SSE
 }
 
-static void rz_rasterize_tile(int row, int col)
+void rz_rasterize_tile(int row, int col)
 {
     auto& bin = bins[row * num_hbins + col];
 
@@ -428,6 +467,7 @@ static void rz_rasterize_tile(int row, int col)
     }
 }
 
+#ifndef USE_MT_TILES
 static void rz_rasterize_bins()
 {
 
@@ -435,6 +475,7 @@ static void rz_rasterize_bins()
         for (int c = 0; c < num_hbins; ++c)
             rz_rasterize_tile(r, c);
 }
+#endif
 
 // End of Larrabee style rasterizing (except below where we call this instead of other rasterization + pixel shader code)
 //=================================================================================================
@@ -442,9 +483,18 @@ static void rz_rasterize_bins()
 bool RastStartup(uint32_t width, uint32_t height)
 {
     // Fill in vertices for triangle
-    Vertices.push_back(Vertex(float3(-0.5f, -0.5f, 0.f), float3(0.f, 0.f, 1.f)));
-    Vertices.push_back(Vertex(float3(0.f, 0.5f, 0.f), float3(0.f, 1.f, 0.f)));
-    Vertices.push_back(Vertex(float3(0.5f, -0.5f, 0.f), float3(1.f, 0.f, 0.f)));
+    for (float z = 5.f; z >= -5.f; z -= 0.25f)
+    {
+        for (float y = 5.f; y >= -5.f; y -= 0.25f)
+        {
+            for (float x = -5.f; x < 5.f; x += 0.25f)
+            {
+                Vertices.push_back(Vertex(float3(x - 0.125f, y - 0.125f, z), float3(0.f, 0.f, 1.f)));
+                Vertices.push_back(Vertex(float3(x + 0.f, y + 0.125f, z), float3(0.f, 1.f, 0.f)));
+                Vertices.push_back(Vertex(float3(x + 0.125f, y - 0.125f, z), float3(1.f, 0.f, 0.f)));
+            }
+        }
+    }
 
     VertOutput.resize(Vertices.size());
 
@@ -452,7 +502,7 @@ bool RastStartup(uint32_t width, uint32_t height)
     XMStoreFloat4x4(&temp, XMMatrixIdentity());
     memcpy_s(&ShaderConstants.WorldMatrix, sizeof(matrix4x4), &temp, sizeof(XMFLOAT4X4));
 
-    XMStoreFloat4x4(&temp, XMMatrixLookAtLH(XMVectorSet(0.f, 0.f, -1.f, 1.f), XMVectorSet(0.f, 0.f, 0.f, 1.f), XMVectorSet(0.f, 1.f, 0.f, 0.f)));
+    XMStoreFloat4x4(&temp, XMMatrixLookAtLH(XMVectorSet(0.f, 0.f, -10.f, 1.f), XMVectorSet(0.f, 0.f, 0.f, 1.f), XMVectorSet(0.f, 1.f, 0.f, 0.f)));
     memcpy_s(&ShaderConstants.ViewMatrix, sizeof(matrix4x4), &temp, sizeof(XMFLOAT4X4));
 
     XMStoreFloat4x4(&temp, XMMatrixPerspectiveFovLH(XMConvertToRadians(90.f), (float)width / height, 0.1f, 100.f));
@@ -466,11 +516,41 @@ bool RastStartup(uint32_t width, uint32_t height)
     num_vbins = render_target_height / bin_vsize + (render_target_height % bin_vsize ? 1 : 0);
 
     rz_init_bins();
+
+#ifdef USE_MT_TILES
+
+    signal_work = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+    signal_shutdown = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+
+    num_threads = 8;
+    threads = new HANDLE[num_threads];
+    for (int i = 0; i < num_threads; ++i)
+    {
+        threads[i] = CreateThread(nullptr, 0, rasterizer_thread, nullptr, 0, nullptr);
+    }
+
+#endif
     return true;
 }
 
 void RastShutdown()
 {
+#ifdef USE_MT_TILES
+
+    SetEvent(signal_shutdown);
+    WaitForMultipleObjects(num_threads, threads, TRUE, INFINITE);
+
+    for (int i = 0; i < num_threads; ++i)
+    {
+        CloseHandle(threads[i]);
+    }
+    delete[] threads;
+
+    CloseHandle(signal_work);
+    CloseHandle(signal_shutdown);
+
+#endif
+
     rz_destroy_bins();
 }
 
@@ -481,9 +561,15 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
 
     memset(pOutput, 0, rowPitch * render_target_height);
 
-#ifdef USE_FULL_PS
+#ifdef ENABLE_ANIMATION
     XMFLOAT4X4 transform;
-    XMStoreFloat4x4(&transform, XMMatrixRotationY(FrameIndex++ * 0.25f));
+
+    static float angle = -0.5f;
+    static float dir = -1.f;
+
+    if (FrameIndex++ % 100 == 0) dir *= -1;
+    angle += dir * 0.0125f;
+    XMStoreFloat4x4(&transform, XMMatrixRotationY(angle));
     memcpy_s(&ShaderConstants.WorldMatrix, sizeof(matrix4x4), &transform, sizeof(transform));
 #endif
 
@@ -516,8 +602,20 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
     render_target = (uint32_t*)pOutput;
 
     rz_clear_bins();
-    rz_bin_triangles((float3*)&out->Position, 1);
+    rz_bin_triangles((float3*)&out->Position, numVerts / 3);
+
+#ifdef USE_MT_TILES
+    num_tiles = num_hbins * num_vbins;
+    current_tile = 0;
+    PulseEvent(signal_work);
+
+    while (InterlockedCompareExchange(&current_tile, 0, 0) < num_tiles)
+    {
+        YieldProcessor();
+    }
+#else
     rz_rasterize_bins();
+#endif
 
 #if 0
     for (uint32_t i = 0; i < numVerts / 3; ++i, out += 3)
