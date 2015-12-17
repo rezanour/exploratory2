@@ -7,8 +7,8 @@
 using namespace DirectX;
 
 #define USE_SSE
-//#define USE_FULL_PS
-//#define USE_MT_TILES // multithreaded tile processing
+#define USE_FULL_PS
+#define USE_MT_TILES // multithreaded tile processing
 #define ENABLE_ANIMATION
 
 // Programmable stages
@@ -111,13 +111,14 @@ static void rz_rasterize_tile(int row, int col);
 HANDLE signal_work;
 HANDLE signal_shutdown;
 HANDLE* threads;
+HANDLE* signal_done;
 int num_threads;
-volatile long current_tile;
+long current_tile;
 long num_tiles;
 
 static DWORD CALLBACK rasterizer_thread(PVOID context)
 {
-    UNREFERENCED(context);
+    HANDLE my_signal_done = (HANDLE)context;
 
     HANDLE signals[]{ signal_shutdown, signal_work };
 
@@ -130,6 +131,8 @@ static DWORD CALLBACK rasterizer_thread(PVOID context)
             rz_rasterize_tile(my_tile / num_hbins, my_tile % num_hbins);
             my_tile = InterlockedIncrement(&current_tile);
         }
+
+        SetEvent(my_signal_done);
 
         result = WaitForMultipleObjects(_countof(signals), signals, FALSE, INFINITE);
     }
@@ -470,7 +473,6 @@ void rz_rasterize_tile(int row, int col)
 #ifndef USE_MT_TILES
 static void rz_rasterize_bins()
 {
-
     for (int r = 0; r < num_vbins; ++r)
         for (int c = 0; c < num_hbins; ++c)
             rz_rasterize_tile(r, c);
@@ -483,7 +485,7 @@ static void rz_rasterize_bins()
 bool RastStartup(uint32_t width, uint32_t height)
 {
     // Fill in vertices for triangle
-    for (float z = 5.f; z >= -5.f; z -= 0.25f)
+    for (float z = 5.f; z >= -5.f; z -= 0.5f)
     {
         for (float y = 5.f; y >= -5.f; y -= 0.25f)
         {
@@ -505,7 +507,7 @@ bool RastStartup(uint32_t width, uint32_t height)
     XMStoreFloat4x4(&temp, XMMatrixLookAtLH(XMVectorSet(0.f, 0.f, -10.f, 1.f), XMVectorSet(0.f, 0.f, 0.f, 1.f), XMVectorSet(0.f, 1.f, 0.f, 0.f)));
     memcpy_s(&ShaderConstants.ViewMatrix, sizeof(matrix4x4), &temp, sizeof(XMFLOAT4X4));
 
-    XMStoreFloat4x4(&temp, XMMatrixPerspectiveFovLH(XMConvertToRadians(90.f), (float)width / height, 0.1f, 100.f));
+    XMStoreFloat4x4(&temp, XMMatrixPerspectiveFovLH(XMConvertToRadians(60.f), (float)width / height, 0.1f, 100.f));
     memcpy_s(&ShaderConstants.ProjectionMatrix, sizeof(matrix4x4), &temp, sizeof(XMFLOAT4X4));
 
     render_target_width = (int)width;
@@ -519,14 +521,18 @@ bool RastStartup(uint32_t width, uint32_t height)
 
 #ifdef USE_MT_TILES
 
+    num_tiles = num_hbins * num_vbins;
+
     signal_work = CreateEvent(nullptr, TRUE, FALSE, nullptr);
     signal_shutdown = CreateEvent(nullptr, TRUE, FALSE, nullptr);
 
     num_threads = 8;
     threads = new HANDLE[num_threads];
+    signal_done = new HANDLE[num_threads];
     for (int i = 0; i < num_threads; ++i)
     {
-        threads[i] = CreateThread(nullptr, 0, rasterizer_thread, nullptr, 0, nullptr);
+        signal_done[i] = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        threads[i] = CreateThread(nullptr, 0, rasterizer_thread, (PVOID)signal_done[i], 0, nullptr);
     }
 
 #endif
@@ -543,8 +549,10 @@ void RastShutdown()
     for (int i = 0; i < num_threads; ++i)
     {
         CloseHandle(threads[i]);
+        CloseHandle(signal_done[i]);
     }
     delete[] threads;
+    delete[] signal_done;
 
     CloseHandle(signal_work);
     CloseHandle(signal_shutdown);
@@ -605,14 +613,16 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
     rz_bin_triangles((float3*)&out->Position, numVerts / 3);
 
 #ifdef USE_MT_TILES
-    num_tiles = num_hbins * num_vbins;
-    current_tile = 0;
-    PulseEvent(signal_work);
+    InterlockedExchange(&current_tile, -1);  // Looks weird huh? That's because InterlockedIncrement returns the POST-incremented value above. Yes, really. WTF
+    SetEvent(signal_work);
 
-    while (InterlockedCompareExchange(&current_tile, 0, 0) < num_tiles)
+    while (InterlockedCompareExchange(&current_tile, 0, 0) < 0)
     {
         YieldProcessor();
     }
+
+    ResetEvent(signal_work);
+    WaitForMultipleObjects(num_threads, signal_done, TRUE, INFINITE);
 #else
     rz_rasterize_bins();
 #endif
