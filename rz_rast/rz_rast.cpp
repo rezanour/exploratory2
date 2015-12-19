@@ -8,8 +8,10 @@ using namespace DirectX;
 
 #define USE_LRB
 #define USE_SSE
-#define USE_FULL_PS
+#define USE_SSE_LERP
 #define USE_MT_TILES // multithreaded tile processing
+#define USE_FULL_PS
+#define RENDER_MANY
 #define ENABLE_ANIMATION
 
 // Programmable stages
@@ -54,8 +56,12 @@ static std::vector<Vertex> Vertices;
 static std::vector<VertexOutput> VertOutput;
 static uint32_t FrameIndex;
 
+#ifdef USE_SSE_LERP
+// lerps 4 pixels at a time, writing out 4 lerped frag values
+static void LerpFragment(const __m128& x, const __m128& y, __m128& mask, const VertexOutput* first, VertexOutput* frags);
+#else
 static bool LerpFragment(float x, float y, const VertexOutput* a, const VertexOutput* b, const VertexOutput* c, VertexOutput* frag);
-
+#endif
 
 
 //=================================================================================================
@@ -321,7 +327,33 @@ static void rz_process_sub_tile(
         else
         {
             // rasterize the pixels!
+#ifdef USE_SSE_LERP
+            VertexOutput frags[4];
+            __m128 fragMask;
+            LerpFragment(base_corner_x, base_corner_y, fragMask, (const VertexOutput*)triangle, frags);
+            float fFragMask[4];
+            _mm_storeu_ps(fFragMask, fragMask);
+            for (int i = 0; i < 4; ++i)
+            {
+                if (fmasks[3 - i] == 0.f && fFragMask[3 - i] == 0.f)
+                {
+                    // can vectorize this comparison
+                    int x = top_left_x + (i * hsize);
+                    if (x >= render_target_width)
+                        break;
 
+                    float4 fragColor;
+                    PixelShader(frags[3 - i], fragColor);
+
+                    // convert to RGBA
+                    render_target[y * render_target_pitch_in_pixels + x] =
+                        (uint32_t)((uint8_t)(fragColor.w * 255.f)) << 24 |
+                        (uint32_t)((uint8_t)(fragColor.z * 255.f)) << 16 |
+                        (uint32_t)((uint8_t)(fragColor.y * 255.f)) << 8 |
+                        (uint32_t)((uint8_t)(fragColor.x * 255.f));
+                }
+            }
+#else
             for (int i = 0; i < 4; ++i) // TODO: vectorize this too
             {
                 if (fmasks[3 - i] == 0.f)
@@ -352,6 +384,7 @@ static void rz_process_sub_tile(
 #endif // USE_FULL_PS
                 }
             }
+#endif // USE_SSE_LERP
         }
     }
 
@@ -487,6 +520,7 @@ static void rz_rasterize_bins()
 bool RastStartup(uint32_t width, uint32_t height)
 {
     // Fill in vertices for triangle
+#ifdef RENDER_MANY
     for (float z = 5.f; z >= -5.f; z -= 1.f)
     {
         for (float y = 5.f; y >= -5.f; y -= 0.25f)
@@ -499,6 +533,11 @@ bool RastStartup(uint32_t width, uint32_t height)
             }
         }
     }
+#else
+    Vertices.push_back(Vertex(float3(-0.5f, -0.5f, 0.f), float3(0.f, 0.f, 1.f)));
+    Vertices.push_back(Vertex(float3(0.f, 0.5f, 0.f), float3(0.f, 1.f, 0.f)));
+    Vertices.push_back(Vertex(float3(0.5f, -0.5f, 0.f), float3(1.f, 0.f, 0.f)));
+#endif
 
     VertOutput.resize(Vertices.size());
 
@@ -506,7 +545,11 @@ bool RastStartup(uint32_t width, uint32_t height)
     XMStoreFloat4x4(&temp, XMMatrixIdentity());
     memcpy_s(&ShaderConstants.WorldMatrix, sizeof(matrix4x4), &temp, sizeof(XMFLOAT4X4));
 
+#ifdef RENDER_MANY
     XMStoreFloat4x4(&temp, XMMatrixLookAtLH(XMVectorSet(0.f, 0.f, -10.f, 1.f), XMVectorSet(0.f, 0.f, 0.f, 1.f), XMVectorSet(0.f, 1.f, 0.f, 0.f)));
+#else
+    XMStoreFloat4x4(&temp, XMMatrixLookAtLH(XMVectorSet(0.f, 0.f, -1.f, 1.f), XMVectorSet(0.f, 0.f, 0.f, 1.f), XMVectorSet(0.f, 1.f, 0.f, 0.f)));
+#endif
     memcpy_s(&ShaderConstants.ViewMatrix, sizeof(matrix4x4), &temp, sizeof(XMFLOAT4X4));
 
     XMStoreFloat4x4(&temp, XMMatrixPerspectiveFovLH(XMConvertToRadians(60.f), (float)width / height, 0.1f, 100.f));
@@ -582,7 +625,11 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
     static float angle = -0.5f;
     static float dir = -1.f;
 
+#ifdef RENDER_MANY
     if (FrameIndex++ % 100 == 0) dir *= -1;
+#else
+    if (FrameIndex++ % 150 == 0) dir *= -1;
+#endif
     angle += dir * 0.0125f;
     XMStoreFloat4x4(&transform, XMMatrixRotationY(angle));
     memcpy_s(&ShaderConstants.WorldMatrix, sizeof(matrix4x4), &transform, sizeof(transform));
@@ -767,6 +814,103 @@ void PixelShader(const VertexOutput& input, float4& output)
 }
 
 
+#ifdef USE_SSE_LERP
+// lerps 4 pixels at a time, writing out 4 lerped frag values
+void LerpFragment(const __m128& x, const __m128& y, __m128& mask, const VertexOutput* first, VertexOutput* frags)
+{
+    const VertexOutput* inA = first;
+    const VertexOutput* inB = (const VertexOutput*)((const uint8_t*)inA + stride);
+    const VertexOutput* inC = (const VertexOutput*)((const uint8_t*)inB + stride);
+
+    __m128 ax = _mm_set1_ps(inA->Position.x);
+    __m128 ay = _mm_set1_ps(inA->Position.y);
+    __m128 bx = _mm_set1_ps(inB->Position.x);
+    __m128 by = _mm_set1_ps(inB->Position.y);
+    __m128 cx = _mm_set1_ps(inC->Position.x);
+    __m128 cy = _mm_set1_ps(inC->Position.y);
+
+    __m128 abx = _mm_sub_ps(bx, ax);
+    __m128 aby = _mm_sub_ps(by, ay);
+    __m128 acx = _mm_sub_ps(cx, ax);
+    __m128 acy = _mm_sub_ps(cy, ay);
+
+    // Find barycentric coordinates of P (wA, wB, wC)
+    __m128 bcx = _mm_sub_ps(cx, bx);
+    __m128 bcy = _mm_sub_ps(cy, by);
+    __m128 apx = _mm_sub_ps(x, ax);
+    __m128 apy = _mm_sub_ps(y, ay);
+    __m128 bpx = _mm_sub_ps(x, bx);
+    __m128 bpy = _mm_sub_ps(y, by);
+
+    // float3 wC = cross(ab, ap);
+    // expand out to:
+    //    wC.x = ab.y * ap.z - ap.y * ab.z;
+    //    wC.y = ab.z * ap.x - ap.z * ab.x;
+    //    wC.z = ab.x * ap.y - ap.x * ab.y;
+    // since we are doing in screen space, z is always 0 so simplify:
+    //    wC.x = 0
+    //    wC.y = 0
+    //    wC.z = ab.x * ap.y - ap.x * ab.y
+    // or, simply:
+    //    wC = abx * apy - apx * aby;
+    __m128 wC = _mm_sub_ps(_mm_mul_ps(abx, apy), _mm_mul_ps(apx, aby));
+    __m128 mask1 = _mm_cmplt_ps(wC, _mm_setzero_ps());
+
+    // Use same reduction for wB & wA
+    __m128 wB = _mm_sub_ps(_mm_mul_ps(apx, acy), _mm_mul_ps(acx, apy));
+    __m128 mask2 = _mm_cmplt_ps(wB, _mm_setzero_ps());
+
+    __m128 wA = _mm_sub_ps(_mm_mul_ps(bcx, bpy), _mm_mul_ps(bpx, bcy));
+    __m128 mask3 = _mm_cmplt_ps(wA, _mm_setzero_ps());
+
+    mask = _mm_or_ps(mask1, _mm_or_ps(mask2, mask3));
+
+    // Use a similar reduction for cross of ab x ac (to find unnormalized normal)
+    __m128 norm = _mm_sub_ps(_mm_mul_ps(abx, acy), _mm_mul_ps(acx, aby));
+    norm = _mm_rcp_ps(norm);
+
+    // to find length of this cross product, which already know is purely in the z
+    // direction, is just the length of the z component, which is the exactly the single
+    // channel norm we computed above. Similar logic is used for lengths of each of
+    // the weights, since they are all single channel vectors, the one channel is exactly
+    // the length.
+
+    __m128 xA = _mm_mul_ps(wA, norm);
+    __m128 xB = _mm_mul_ps(wB, norm);
+    __m128 xC = _mm_mul_ps(wC, norm);
+
+    // Interpolate all the attributes for these 4 pixels
+    __m128 posX = _mm_add_ps(_mm_mul_ps(ax, xA), _mm_add_ps(_mm_mul_ps(bx, xB), _mm_mul_ps(cx, xC)));
+    __m128 posY = _mm_add_ps(_mm_mul_ps(ay, xA), _mm_add_ps(_mm_mul_ps(by, xB), _mm_mul_ps(cy, xC)));
+
+    __m128 colX = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(inA->Color.x), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(inB->Color.x), xB), _mm_mul_ps(_mm_set1_ps(inC->Color.x), xC)));
+    __m128 colY = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(inA->Color.y), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(inB->Color.y), xB), _mm_mul_ps(_mm_set1_ps(inC->Color.y), xC)));
+    __m128 colZ = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(inA->Color.z), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(inB->Color.z), xB), _mm_mul_ps(_mm_set1_ps(inC->Color.z), xC)));
+
+    float fPosX[4], fPosY[4];
+    float fColX[4], fColY[4], fColZ[4];
+
+    _mm_storeu_ps(fPosX, posX);
+    _mm_storeu_ps(fPosY, posY);
+
+    _mm_storeu_ps(fColX, colX);
+    _mm_storeu_ps(fColY, colY);
+    _mm_storeu_ps(fColZ, colZ);
+
+    for (int i = 0; i < 4; ++i)
+    {
+        frags[i].Position.x = fPosX[i];
+        frags[i].Position.y = fPosY[i];
+        frags[i].Position.z = 0.f;
+        frags[i].Position.w = 1.f;
+        frags[i].Color.x = fColX[i];
+        frags[i].Color.y = fColY[i];
+        frags[i].Color.z = fColZ[i];
+    }
+}
+
+#else
+
 bool LerpFragment(float x, float y, const VertexOutput* inA, const VertexOutput* inB, const VertexOutput* inC, VertexOutput* frag)
 {
     float3 a = float3(inA->Position.x, inA->Position.y, 0);
@@ -818,4 +962,6 @@ bool LerpFragment(float x, float y, const VertexOutput* inA, const VertexOutput*
 
     return true;
 }
-#endif
+#endif // USE_SSE_LERP
+
+#endif // USE_FULL_PS
