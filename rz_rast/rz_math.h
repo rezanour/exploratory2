@@ -154,32 +154,32 @@ struct alignas(16) matrix4x4
 #pragma warning(pop)
 
 // operators
-float2 operator- (const float2& v1, const float2& v2)
+inline float2 operator- (const float2& v1, const float2& v2)
 {
     return float2(v1.x - v2.x, v1.y - v2.y);
 }
 
-float3 operator+ (const float3& v1, const float3& v2)
+inline float3 operator+ (const float3& v1, const float3& v2)
 {
     return float3(v1.x + v2.x, v1.y + v2.y, v1.z + v2.z);
 }
 
-float3 operator- (const float3& v1, const float3& v2)
+inline float3 operator- (const float3& v1, const float3& v2)
 {
     return float3(v1.x - v2.x, v1.y - v2.y, v1.z - v2.z);
 }
 
-float3 operator* (const float3& v, float s)
+inline float3 operator* (const float3& v, float s)
 {
     return float3(v.x * s, v.y * s, v.z * s);
 }
 
-float4 operator+ (const float4& v1, const float4& v2)
+inline float4 operator+ (const float4& v1, const float4& v2)
 {
     return float4(v1.x + v2.x, v1.y + v2.y, v1.z + v2.z, v2.w + v2.w);
 }
 
-float4 operator* (const float4& v, float s)
+inline float4 operator* (const float4& v, float s)
 {
     return float4(v.x * s, v.y * s, v.z * s, v.w * s);
 }

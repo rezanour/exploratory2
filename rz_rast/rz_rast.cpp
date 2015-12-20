@@ -1,64 +1,37 @@
 #include "precomp.h"
 #include "rz_rast.h"
 #include "rz_math.h"
+#include "rz_vert_to_rast.h"
 
 #include <vector>
 #include <DirectXMath.h>
 using namespace DirectX;
 
-#define USE_LRB
-#define USE_SSE
-#define USE_SSE_LERP
-#define USE_MT_TILES // multithreaded tile processing
-#define USE_FULL_PS
-#define RENDER_MANY
-#define ENABLE_ANIMATION
-
-// Programmable stages
-struct Constants
+#ifdef USE_SSE_LERP_AND_PS
+struct ps_result
 {
-    matrix4x4 WorldMatrix;
-    matrix4x4 ViewMatrix;
-    matrix4x4 ProjectionMatrix;
+    __m128 r;
+    __m128 g;
+    __m128 b;
+    __m128 a;
 };
-
-struct alignas(16) VertexInput
-{
-    float3 Position;
-    float3 Color;
-};
-
-struct alignas(16) VertexOutput
-{
-    float4 Position; // SV_POSITION
-    float3 Color;
-};
-
-static void VertexShader(const VertexInput* input, VertexOutput* output);
+static ps_result PixelShader(const __m128& posx, const __m128& posy, const __m128& posz, const __m128& posw, const __m128& colx, const __m128& coly, const __m128& colz);
+#else
 static void PixelShader(const VertexOutput& input, float4& output);
+#endif
 
 
 // Other stuff
-struct Vertex
-{
-    float3 Position;
-    float3 Color;
-
-    Vertex(const float3& pos, const float3& color)
-        : Position(pos), Color(color)
-    {}
-};
-static const uint32_t Stride = sizeof(Vertex);
 
 // Variables
-static Constants ShaderConstants;
+static VSConstants ShaderConstants;
 static std::vector<Vertex> Vertices;
 static std::vector<VertexOutput> VertOutput;
 static uint32_t FrameIndex;
 
-#ifdef USE_SSE_LERP
+#ifdef USE_SSE_LERP_AND_PS
 // lerps 4 pixels at a time, writing out 4 lerped frag values
-static void LerpFragment(const __m128& x, const __m128& y, __m128& mask, const VertexOutput* first, VertexOutput* frags);
+static void LerpFragment(const __m128& x, const __m128& y, __m128& mask, const VertexOutput* first, __m128& posx, __m128& posy, __m128& posz, __m128& posw, __m128& colx, __m128& coly, __m128& colz);
 #else
 static bool LerpFragment(float x, float y, const VertexOutput* a, const VertexOutput* b, const VertexOutput* c, VertexOutput* frag);
 #endif
@@ -327,30 +300,44 @@ static void rz_process_sub_tile(
         else
         {
             // rasterize the pixels!
-#ifdef USE_SSE_LERP
-            VertexOutput frags[4];
+#ifdef USE_SSE_LERP_AND_PS
+            __m128 posx, posy, posz, posw, colx, coly, colz;
             __m128 fragMask;
-            LerpFragment(base_corner_x, base_corner_y, fragMask, (const VertexOutput*)triangle, frags);
+            LerpFragment(base_corner_x, base_corner_y, fragMask, (const VertexOutput*)triangle, posx, posy, posz, posw, colx, coly, colz);
+            ps_result pixels = PixelShader(posx, posy, posz, posw, colx, coly, colz);
+
             float fFragMask[4];
             _mm_storeu_ps(fFragMask, fragMask);
+
+            // convert to RGBA
+            __m128 scale = _mm_set1_ps(255.f);
+            __m128 r = _mm_mul_ps(pixels.r, scale);
+            __m128 g = _mm_mul_ps(pixels.g, scale);
+            __m128 b = _mm_mul_ps(pixels.b, scale);
+            __m128 a = _mm_mul_ps(pixels.a, scale);
+
+            float fr[4], fg[4], fb[4], fa[4];
+            _mm_storeu_ps(fr, r);
+            _mm_storeu_ps(fg, g);
+            _mm_storeu_ps(fb, b);
+            _mm_storeu_ps(fa, a);
+
             for (int i = 0; i < 4; ++i)
             {
-                if (fmasks[3 - i] == 0.f && fFragMask[3 - i] == 0.f)
+                int maskIndex = 3 - i;
+                if (fmasks[maskIndex] == 0.f && fFragMask[maskIndex] == 0.f)
                 {
                     // can vectorize this comparison
                     int x = top_left_x + (i * hsize);
                     if (x >= render_target_width)
                         break;
 
-                    float4 fragColor;
-                    PixelShader(frags[3 - i], fragColor);
-
                     // convert to RGBA
                     render_target[y * render_target_pitch_in_pixels + x] =
-                        (uint32_t)((uint8_t)(fragColor.w * 255.f)) << 24 |
-                        (uint32_t)((uint8_t)(fragColor.z * 255.f)) << 16 |
-                        (uint32_t)((uint8_t)(fragColor.y * 255.f)) << 8 |
-                        (uint32_t)((uint8_t)(fragColor.x * 255.f));
+                        (uint32_t)((uint8_t)fa[maskIndex]) << 24 |
+                        (uint32_t)((uint8_t)fb[maskIndex]) << 16 |
+                        (uint32_t)((uint8_t)fg[maskIndex]) << 8 |
+                        (uint32_t)((uint8_t)fr[maskIndex]);
                 }
             }
 #else
@@ -384,7 +371,7 @@ static void rz_process_sub_tile(
 #endif // USE_FULL_PS
                 }
             }
-#endif // USE_SSE_LERP
+#endif // USE_SSE_LERP_AND_PS
         }
     }
 
@@ -612,6 +599,18 @@ void RastShutdown()
 #endif // USE_LRB
 }
 
+// Non vectorized version. Just takes one input and makes one output
+static void VertexShader(const Vertex* inputs, VertexOutput* outputs, const VSConstants& constants)
+{
+    const Vertex& input = inputs[0];
+    VertexOutput& output = outputs[0];
+    output.Position = float4(input.Position, 1.f);
+    output.Position = mul(constants.WorldMatrix, output.Position);
+    output.Position = mul(constants.ViewMatrix, output.Position);
+    output.Position = mul(constants.ProjectionMatrix, output.Position);
+    output.Color = input.Color;
+}
+
 
 bool RenderScene(void* const pOutput, uint32_t rowPitch)
 {
@@ -644,8 +643,7 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
     // Vertex Shader Stage
     for (uint32_t i = 0; i < numVerts; ++i, ++v, ++out)
     {
-        VertexInput input = { v->Position, v->Color };
-        VertexShader(&input, out);
+        VertexShader(v, out, ShaderConstants);
 
         // w divide & convert to viewport (pixels)
         out->Position /= out->Position.w;
@@ -798,25 +796,30 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
     return true;
 }
 
-void VertexShader(const VertexInput* input, VertexOutput* output)
-{
-    output->Position = float4(input->Position, 1.f);
-    output->Position = mul(ShaderConstants.WorldMatrix, output->Position);
-    output->Position = mul(ShaderConstants.ViewMatrix, output->Position);
-    output->Position = mul(ShaderConstants.ProjectionMatrix, output->Position);
-    output->Color = input->Color;
-}
-
 #ifdef USE_FULL_PS
+
 void PixelShader(const VertexOutput& input, float4& output)
 {
     output = float4(input.Color, 1.f);
 }
 
 
-#ifdef USE_SSE_LERP
+#ifdef USE_SSE_LERP_AND_PS
+
+ps_result PixelShader(const __m128& posx, const __m128& posy, const __m128& posz, const __m128& posw, const __m128& colx, const __m128& coly, const __m128& colz)
+{
+    ps_result result;
+    result.r = colx;
+    result.g = coly;
+    result.b = colz;
+    result.a = _mm_set1_ps(1.f);
+    return result;
+}
+
+
+
 // lerps 4 pixels at a time, writing out 4 lerped frag values
-void LerpFragment(const __m128& x, const __m128& y, __m128& mask, const VertexOutput* first, VertexOutput* frags)
+void LerpFragment(const __m128& x, const __m128& y, __m128& mask, const VertexOutput* first, __m128& posx, __m128& posy, __m128& posz, __m128& posw, __m128& colx, __m128& coly, __m128& colz)
 {
     const VertexOutput* inA = first;
     const VertexOutput* inB = (const VertexOutput*)((const uint8_t*)inA + stride);
@@ -880,33 +883,14 @@ void LerpFragment(const __m128& x, const __m128& y, __m128& mask, const VertexOu
     __m128 xC = _mm_mul_ps(wC, norm);
 
     // Interpolate all the attributes for these 4 pixels
-    __m128 posX = _mm_add_ps(_mm_mul_ps(ax, xA), _mm_add_ps(_mm_mul_ps(bx, xB), _mm_mul_ps(cx, xC)));
-    __m128 posY = _mm_add_ps(_mm_mul_ps(ay, xA), _mm_add_ps(_mm_mul_ps(by, xB), _mm_mul_ps(cy, xC)));
+    posx = _mm_add_ps(_mm_mul_ps(ax, xA), _mm_add_ps(_mm_mul_ps(bx, xB), _mm_mul_ps(cx, xC)));
+    posy = _mm_add_ps(_mm_mul_ps(ay, xA), _mm_add_ps(_mm_mul_ps(by, xB), _mm_mul_ps(cy, xC)));
+    posz = _mm_setzero_ps();
+    posw = _mm_set1_ps(1.f);
 
-    __m128 colX = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(inA->Color.x), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(inB->Color.x), xB), _mm_mul_ps(_mm_set1_ps(inC->Color.x), xC)));
-    __m128 colY = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(inA->Color.y), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(inB->Color.y), xB), _mm_mul_ps(_mm_set1_ps(inC->Color.y), xC)));
-    __m128 colZ = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(inA->Color.z), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(inB->Color.z), xB), _mm_mul_ps(_mm_set1_ps(inC->Color.z), xC)));
-
-    float fPosX[4], fPosY[4];
-    float fColX[4], fColY[4], fColZ[4];
-
-    _mm_storeu_ps(fPosX, posX);
-    _mm_storeu_ps(fPosY, posY);
-
-    _mm_storeu_ps(fColX, colX);
-    _mm_storeu_ps(fColY, colY);
-    _mm_storeu_ps(fColZ, colZ);
-
-    for (int i = 0; i < 4; ++i)
-    {
-        frags[i].Position.x = fPosX[i];
-        frags[i].Position.y = fPosY[i];
-        frags[i].Position.z = 0.f;
-        frags[i].Position.w = 1.f;
-        frags[i].Color.x = fColX[i];
-        frags[i].Color.y = fColY[i];
-        frags[i].Color.z = fColZ[i];
-    }
+    colx = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(inA->Color.x), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(inB->Color.x), xB), _mm_mul_ps(_mm_set1_ps(inC->Color.x), xC)));
+    coly = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(inA->Color.y), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(inB->Color.y), xB), _mm_mul_ps(_mm_set1_ps(inC->Color.y), xC)));
+    colz = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(inA->Color.z), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(inB->Color.z), xB), _mm_mul_ps(_mm_set1_ps(inC->Color.z), xC)));
 }
 
 #else
@@ -962,6 +946,6 @@ bool LerpFragment(float x, float y, const VertexOutput* inA, const VertexOutput*
 
     return true;
 }
-#endif // USE_SSE_LERP
+#endif // USE_SSE_LERP_AND_PS
 
 #endif // USE_FULL_PS
