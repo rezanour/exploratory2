@@ -1,11 +1,14 @@
 #include "precomp.h"
 
+#define NOMINMAX
 #include <Windows.h>
 #include <d3d11_1.h>
 #include <dxgi1_2.h>
 #include <wrl.h>
 
-#include "rz_rast.h"
+#include "rz_common.h"
+#include "rz_rasterization.h"
+#include "rz_interpolation.h"
 
 using namespace Microsoft::WRL;
 

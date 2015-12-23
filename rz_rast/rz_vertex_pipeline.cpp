@@ -1,5 +1,6 @@
 #include "precomp.h"
-#include "rz_vert_to_rast.h"
+#include "rz_common.h"
+#include "rz_vertex_pipeline.h"
 
 #include <vector>
 

@@ -91,10 +91,12 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="precomp.h" />
+    <ClInclude Include="rz_common.h" />
+    <ClInclude Include="rz_interpolation.h" />
     <ClInclude Include="rz_math.h" />
-    <ClInclude Include="rz_rast.h" />
-    <ClInclude Include="rz_vert_to_rast.h" />
-    <ClInclude Include="VertexShader.ispc" />
+    <ClInclude Include="rz_pixel_processing.h" />
+    <ClInclude Include="rz_rasterization.h" />
+    <ClInclude Include="rz_vertex_pipeline.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp" />
@@ -102,8 +104,11 @@
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
     </ClCompile>
-    <ClCompile Include="rz_rast.cpp" />
-    <ClCompile Include="rz_vert_to_rast.cpp" />
+    <ClCompile Include="rz_interpolation.cpp" />
+    <ClCompile Include="rz_pipeline.cpp" />
+    <ClCompile Include="rz_pixel_processing.cpp" />
+    <ClCompile Include="rz_rasterization.cpp" />
+    <ClCompile Include="rz_vertex_pipeline.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

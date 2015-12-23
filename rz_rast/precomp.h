@@ -1,7 +1,8 @@
 #pragma once
 
-#include <memory.h>
 #include <stdint.h>
+#include <limits.h>
+#include <memory.h>
 #include <assert.h>
 #include <nmmintrin.h>
 
