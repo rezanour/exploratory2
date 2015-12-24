@@ -87,6 +87,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <AdditionalDependencies>d3d11.lib;dxgi.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <Profile>true</Profile>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -95,6 +96,7 @@
     <ClInclude Include="rz_interpolation.h" />
     <ClInclude Include="rz_math.h" />
     <ClInclude Include="rz_pixel_processing.h" />
+    <ClInclude Include="rz_rast.h" />
     <ClInclude Include="rz_rasterization.h" />
     <ClInclude Include="rz_vertex_pipeline.h" />
   </ItemGroup>

@@ -36,6 +36,9 @@
     <ClInclude Include="rz_pixel_processing.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="rz_rast.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="precomp.cpp">
@@ -57,7 +60,7 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="rz_pipeline.cpp">
-      <Filter>Header Files</Filter>
+      <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

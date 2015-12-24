@@ -634,6 +634,13 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
     memcpy_s(&ShaderConstants.WorldMatrix, sizeof(matrix4x4), &transform, sizeof(transform));
 #endif
 
+    extern void rz_SetRenderTarget(uint32_t* const pRenderTarget, int width, int height, int pitchPixels);
+    extern void rz_Draw(const VSConstants& constants, const Vertex* vertices, int numVerts);
+
+    rz_SetRenderTarget((uint32_t*)pOutput, render_target_width, render_target_height, rowPitch / sizeof(uint32_t));
+    rz_Draw(ShaderConstants, Vertices.data(), (int)Vertices.size());
+
+#if 0
     // Serial, simple impl first just to try some ideas. Then will do this right
 
     uint32_t numVerts = (uint32_t)Vertices.size();
@@ -792,6 +799,7 @@ bool RenderScene(void* const pOutput, uint32_t rowPitch)
         }
     }
 #endif  // USE_LRB
+#endif
 
     return true;
 }
