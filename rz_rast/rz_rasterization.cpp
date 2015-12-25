@@ -1,6 +1,5 @@
 #include "precomp.h"
 #include "rz_common.h"
-#include "rz_vertex_pipeline.h"
 #include "rz_rasterization.h"
 
 #include <vector>

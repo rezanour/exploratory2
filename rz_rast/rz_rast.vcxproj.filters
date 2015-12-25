@@ -24,16 +24,7 @@
     <ClInclude Include="rz_common.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="rz_interpolation.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="rz_rasterization.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="rz_vertex_pipeline.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="rz_pixel_processing.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="rz_rast.h">
@@ -48,15 +39,6 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="rz_rasterization.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="rz_vertex_pipeline.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="rz_interpolation.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="rz_pixel_processing.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="rz_pipeline.cpp">

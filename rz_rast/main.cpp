@@ -8,7 +8,6 @@
 
 #include "rz_common.h"
 #include "rz_rasterization.h"
-#include "rz_interpolation.h"
 
 using namespace Microsoft::WRL;
 
