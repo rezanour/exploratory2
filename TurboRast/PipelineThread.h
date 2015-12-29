@@ -22,6 +22,9 @@ private:
     static DWORD CALLBACK s_ThreadProc(PVOID context);
     void ThreadProc();
 
+    std::shared_ptr<RenderCommand> GetNextCommand();
+    void SyncAndDoSerialWork(uint64_t fenceValue);
+
     static void __vectorcall sseProcessBlock(
         const float2& p1, const float2& p2, const float2& p3,   // three triangle vertices
         const float2& e1, const float2& e2, const float2& e3,   // three edge equations

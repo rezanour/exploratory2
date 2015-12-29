@@ -66,18 +66,7 @@ void TRPipelineThread::ThreadProc()
     DWORD result = WaitForMultipleObjects(_countof(hSignals), hSignals, FALSE, INFINITE);
     while (result != WAIT_OBJECT_0)
     {
-        std::shared_ptr<RenderCommand> command;
-
-        // Read next job out, if any
-        {
-            auto lock = CommandsLock.Lock();
-
-            if (!Commands.empty())
-            {
-                command = Commands.front();
-                Commands.pop_front();
-            }
-        }
+        std::shared_ptr<RenderCommand> command = GetNextCommand();
 
         while (command)
         {
@@ -179,61 +168,84 @@ void TRPipelineThread::ThreadProc()
 
             // Stage 3: Fragment/pixel processing (if applicable)
 
-            // Stage 4: Join & Do some serial work from last thread through, then unblock other threads
 
-            // Before checking join barrier, try to reset the wait barrier. If it's already reset,
-            // this is benign. If it's not, we know that not all threads are through the join barrier yet (we ourselves aren't)
-            // so we know we're not competing with the signaler. Also, if we are the first one through the join barrier,
-            // we will be reseting before anyone (us) waits on this. If others are already waiting on this, that means they
-            // went through the barrier already and already reset, making ours benign
-            SharedData->WaitBarrier.store(0);
+            // Stage 4: Synchronize & do some serial work from last thread through, then unblock other threads
+            SyncAndDoSerialWork(command->FenceValue);
 
-            if (++SharedData->JoinBarrier == SharedData->NumThreads)
-            {
-                // Last one through the barrier, reset & do serial work
-                SharedData->JoinBarrier.store(0);
-
-                // Signal completion of this work
-                Pipeline->NotifyCompletion(command->FenceValue);
-
-                // Reset some internal shared state
-                SharedData->CurrentVertex = 0;
-                SharedData->CurrentTriangle = 0;
-
-                // Signal the wait barrier
-                SharedData->WaitBarrier.store(1);
-            }
-            else
-            {
-                int compareTo = 1;
-                while (!SharedData->WaitBarrier.compare_exchange_strong(compareTo, 1))
-                {
-                    // Allow other threads to make progress
-                    _mm_pause();
-                    _mm_pause();
-                    _mm_pause();
-                    _mm_pause();
-                    _mm_pause();
-                }
-            }
-
-            // Read next job out, if any
-            {
-                auto lock = CommandsLock.Lock();
-                if (!Commands.empty())
-                {
-                    command = Commands.front();
-                    Commands.pop_front();
-                }
-                else
-                {
-                    command = nullptr;
-                }
-            }
+            command = GetNextCommand();
         }
 
         // Wait for either shutdown, or more work.
         result = WaitForMultipleObjects(_countof(hSignals), hSignals, FALSE, INFINITE);
+    }
+}
+
+std::shared_ptr<RenderCommand> TRPipelineThread::GetNextCommand()
+{
+    auto lock = CommandsLock.Lock();
+
+    std::shared_ptr<RenderCommand> command;
+
+    if (!Commands.empty())
+    {
+        command = Commands.front();
+        Commands.pop_front();
+    }
+
+    return command;
+}
+
+void TRPipelineThread::SyncAndDoSerialWork(uint64_t fenceValue)
+{
+    // Join, then do serial work (also resets wait barrier 2)
+    if (++SharedData->JoinBarrier == SharedData->NumThreads)
+    {
+        // Last one through the barrier, reset & do serial work
+        SharedData->JoinBarrier = 0;
+
+        // Everyone is blocked on wait barrier 1 right now, so we can reset 2
+        SharedData->WaitBarrier2 = false;
+
+        // Signal completion of this work
+        Pipeline->NotifyCompletion(fenceValue);
+
+        // Reset some internal shared state
+        SharedData->CurrentVertex = 0;
+        SharedData->CurrentTriangle = 0;
+
+        // Signal the wait barrier
+        SharedData->WaitBarrier1 = true;
+    }
+    else
+    {
+        while (!SharedData->WaitBarrier1)
+        {
+            // Allow other threads to make progress
+            _mm_pause();
+        }
+    }
+
+    // Since we need to reset wait barrier 1, but can't until we know nobody
+    // can reach it, we have to join & block on wait barrier 2 now and then
+    // reset barrier 1
+    if (++SharedData->JoinBarrier == SharedData->NumThreads)
+    {
+        // Last one through the barrier, reset & do serial work
+        SharedData->JoinBarrier = 0;
+
+        // Everyone is blocked on wait barrier 2 right now, so we can reset 1
+        SharedData->WaitBarrier1 = false;
+
+        // Signal the wait barrier
+        SharedData->WaitBarrier2 = true;
+    }
+    else
+    {
+        while (!SharedData->WaitBarrier2)
+        {
+            // Allow other threads to make progress
+            _mm_pause();
+        }
     }
 }
 

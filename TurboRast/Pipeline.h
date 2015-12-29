@@ -10,8 +10,8 @@ struct SharedPipelineData
 
     // Needs to be reset from a pipeline thread in between each
     // render packet. Requires synch barriers
-    std::atomic_int64_t CurrentVertex;
-    std::atomic_int64_t CurrentTriangle;
+    std::atomic_uint64_t CurrentVertex;
+    std::atomic_uint64_t CurrentTriangle;
 
     SSEVSOutput* VSOutputs;
 
@@ -21,12 +21,13 @@ struct SharedPipelineData
     // When == NumThreads, all threads have passed by barrier. Also, if
     // incrementing it returns NumThreads, that is last thread through barrier.
     // Barrier needs to be reset to 0 when it's safe to do so
-    std::atomic_int JoinBarrier;
+    std::atomic_int32_t JoinBarrier;
 
     // Starts as 0. Each thread that waits on this tries to compare/exchange it
     // from 1 to 1, which will fail when it's 0. When owning thread wants to signal it,
     // it sets it to 1. Needs to be reset to 0 when it's safe to do so
-    std::atomic_int WaitBarrier;
+    std::atomic_bool WaitBarrier1;
+    std::atomic_bool WaitBarrier2;
 };
 
 // A single render command (ie. a Draw() call)

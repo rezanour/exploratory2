@@ -38,13 +38,15 @@ bool TRPipeline::Initialize()
     }
 
     // TODO: formalize numThreads determination
-    SharedData.NumThreads = 8;
+    SharedData.NumThreads = 4;
     SharedData.ShutdownEvent = ShutdownEvent.Get();
-    SharedData.JoinBarrier = 0;
-    SharedData.WaitBarrier = 0;
 
     SharedData.CurrentVertex = 0;
     SharedData.CurrentTriangle = 0;
+
+    SharedData.JoinBarrier = 0;
+    SharedData.WaitBarrier1 = false;
+    SharedData.WaitBarrier2 = false;
 
     // Configure default scratch space for pipeline threads
     Scratch.resize(4 * 1024 * 1024);    // 4 MB
@@ -97,10 +99,6 @@ void TRPipeline::FlushAndWait()
     {
         // Allow other threads & hyperthreads to make progress
         // before checking again
-        _mm_pause();
-        _mm_pause();
-        _mm_pause();
-        _mm_pause();
         _mm_pause();
     }
 }
