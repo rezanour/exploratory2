@@ -2,6 +2,9 @@
 
 #include "TurboRastMath.h"
 
+class VertexBuffer;
+class Texture;
+
 // TODO: Only support one type of vertex currently. Need to find a good way to efficiently handle arbitrary vertices
 struct Vertex
 {
@@ -81,10 +84,7 @@ struct SharedRenderData
     uint64_t JobID;
 
     // Pipeline
-    uint32_t* RenderTarget;
-    int RTWidth;
-    int RTHeight;
-    int RTPitchInPixels;
+    const Texture* RenderTarget;
     pfnSSEVertexShader VertexShader;
     pfnSSEPixelShader PixelShader;
     void* VSConstantBuffer;
@@ -92,12 +92,8 @@ struct SharedRenderData
 
     std::atomic_uint64_t ProcessedVertices;
     uint64_t NumVertices;
-    uint64_t NumVertexBlocks;
 
-    // Space allocated by caller. Must be large enough
-    SSEVertexBlock* VertexBuffer;
-    SSEVSOutput* VSOutputs;
-    SSEPSOutput* PSOutputs;
+    const VertexBuffer* TheVertexBuffer;
 
     // Currently, only support triangle list
     std::atomic_uint64_t ProcessedTriangles;

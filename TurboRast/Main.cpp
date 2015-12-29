@@ -2,6 +2,8 @@
 #include <d3d11.h>      // Device/swapchain for final framebuffer
 
 #include "Renderer.h"
+#include "VertexBuffer.h"
+#include "Texture.h"
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -27,7 +29,8 @@ static ComPtr<ID3D11Texture2D> BackBuffer;
 static ComPtr<ID3D11Texture2D> CPUBuffer[MaxFramesInFlight];
 
 static std::unique_ptr<Renderer> TheRenderer;
-static std::vector<Vertex> Vertices;
+static std::unique_ptr<VertexBuffer> VertBuffer;
+static std::unique_ptr<Texture> RenderTargets[MaxFramesInFlight];
 
 struct SimpleConstants
 {
@@ -36,7 +39,6 @@ struct SimpleConstants
 };
 
 static SimpleConstants ShaderConstants;
-
 
 static bool WinStartup();
 static void WinShutdown();
@@ -274,6 +276,7 @@ bool AppStartup()
         return false;
     }
 
+    std::vector<Vertex> vertices;
     // Fill in vertices for triangle
 #ifdef RENDER_MANY
     for (float z = 5.f; z >= -5.f; z -= 1.f)
@@ -282,19 +285,22 @@ bool AppStartup()
         {
             for (float x = -5.f; x < 5.f; x += 0.25f)
             {
-                Vertices.push_back(Vertex(float3(x - 0.125f, y - 0.125f, z), float3(0.f, 0.f, 1.f)));
-                Vertices.push_back(Vertex(float3(x + 0.f, y + 0.125f, z), float3(0.f, 1.f, 0.f)));
-                Vertices.push_back(Vertex(float3(x + 0.125f, y - 0.125f, z), float3(1.f, 0.f, 0.f)));
+                vertices.push_back(Vertex(float3(x - 0.125f, y - 0.125f, z), float3(0.f, 0.f, 1.f)));
+                vertices.push_back(Vertex(float3(x + 0.f, y + 0.125f, z), float3(0.f, 1.f, 0.f)));
+                vertices.push_back(Vertex(float3(x + 0.125f, y - 0.125f, z), float3(1.f, 0.f, 0.f)));
             }
         }
     }
 #else
-    Vertices.push_back(Vertex(float3(-0.5f, -0.5f, 0.f), float3(0.f, 0.f, 1.f)));
-    Vertices.push_back(Vertex(float3(0.f, 0.5f, 0.f), float3(0.f, 1.f, 0.f)));
-    Vertices.push_back(Vertex(float3(0.5f, -0.5f, 0.f), float3(1.f, 0.f, 0.f)));
+    vertices.push_back(Vertex(float3(-0.5f, -0.5f, 0.f), float3(0.f, 0.f, 1.f)));
+    vertices.push_back(Vertex(float3(0.f, 0.5f, 0.f), float3(0.f, 1.f, 0.f)));
+    vertices.push_back(Vertex(float3(0.5f, -0.5f, 0.f), float3(1.f, 0.f, 0.f)));
 #endif
 
-    TheRenderer->IASetVertexBuffer(Vertices.data(), Vertices.size());
+    VertBuffer = std::make_unique<VertexBuffer>();
+    VertBuffer->Update(vertices.data(), vertices.size());
+
+    TheRenderer->IASetVertexBuffer(VertBuffer.get());
     TheRenderer->VSSetShader(SimpleVertexShader);
     TheRenderer->PSSetShader(SimplePixelShader);
     TheRenderer->VSSetConstantBuffer(&ShaderConstants);
@@ -320,8 +326,13 @@ bool DoFrame()
         return false;
     }
 
-    TheRenderer->OMSetRenderTarget(mapped.pData, OutputWidth, OutputHeight, mapped.RowPitch);
-    TheRenderer->Draw(Vertices.size(), 0);
+    if (!RenderTargets[FrameIndex])
+    {
+        RenderTargets[FrameIndex] = std::make_unique<Texture>(mapped.pData, (int)OutputWidth, (int)OutputHeight, (int)mapped.RowPitch / (int)sizeof(uint32_t));
+    }
+   
+    TheRenderer->OMSetRenderTarget(RenderTargets[FrameIndex].get());
+    TheRenderer->Draw(VertBuffer->GetNumVertices(), 0);
 
     Context->Unmap(CPUBuffer[FrameIndex].Get(), 0);
 

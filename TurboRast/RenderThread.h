@@ -34,6 +34,10 @@ private:
     static const uint32_t MaxInFlightRenderJobs = 32;
     static uint32_t NumThreads;
 
+    // Shared scratch memory that threads work with
+    static SSEVSOutput VSOutputs[];
+    static SSEPSOutput PSOutputs[];
+
     uint32_t ID;
     Thread TheThread;
 

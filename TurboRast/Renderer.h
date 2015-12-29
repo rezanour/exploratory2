@@ -1,6 +1,8 @@
 #pragma once
 
 class RenderThread;
+class VertexBuffer;
+class Texture;
 
 // The entry point into TurboRast renderer
 
@@ -12,15 +14,8 @@ public:
 
     bool Initialize(uint32_t numThreads);
 
-    void OMSetRenderTarget(void* pRenderTarget, int width, int height, int pitchInBytes)
-    {
-        RenderTarget = (uint32_t*)pRenderTarget;
-        RTWidth = width;
-        RTHeight = height;
-        RTPitchInPixels = pitchInBytes / sizeof(uint32_t);
-    }
-
-    void IASetVertexBuffer(Vertex* vertexBuffer, uint64_t numVerts);
+    void OMSetRenderTarget(const Texture* texture) { RenderTarget = texture; }
+    void IASetVertexBuffer(const VertexBuffer* const vertexBuffer);
     void VSSetShader(pfnSSEVertexShader vertexShader) { VertexShader = vertexShader; }
     void VSSetConstantBuffer(void* constantBuffer) { VSConstantBuffer = constantBuffer; }
     void PSSetShader(pfnSSEPixelShader pixelShader) { PixelShader = pixelShader; }
@@ -38,11 +33,8 @@ private:
     std::vector<SSEPSOutput> PSOutputScratch;
 
     // Current pipeline state
-    uint32_t* RenderTarget = nullptr;
-    int RTWidth = 0;
-    int RTHeight = 0;
-    int RTPitchInPixels = 0;
-    std::vector<SSEVertexBlock> VertexBuffer;
+    const Texture* RenderTarget = nullptr;
+    const VertexBuffer* TheVertexBuffer = nullptr;
     pfnSSEVertexShader VertexShader = nullptr;
     pfnSSEPixelShader PixelShader = nullptr;
     void* VSConstantBuffer = nullptr;

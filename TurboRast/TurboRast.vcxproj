@@ -88,8 +88,10 @@
     <ClInclude Include="Precomp.h" />
     <ClInclude Include="Renderer.h" />
     <ClInclude Include="RenderThread.h" />
+    <ClInclude Include="Texture.h" />
     <ClInclude Include="TurboRastMath.h" />
     <ClInclude Include="TurboRastTypes.h" />
+    <ClInclude Include="VertexBuffer.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Main.cpp" />
@@ -99,6 +101,7 @@
     </ClCompile>
     <ClCompile Include="Renderer.cpp" />
     <ClCompile Include="RenderThread.cpp" />
+    <ClCompile Include="VertexBuffer.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

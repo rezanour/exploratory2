@@ -1,9 +1,15 @@
 #include "Precomp.h"
 #include "RenderThread.h"
+#include "VertexBuffer.h"
+#include "Texture.h"
 
 using namespace Microsoft::WRL::Wrappers;
 
 uint32_t RenderThread::NumThreads = 0;
+static const uint32_t DefaultScratchSize = 65536;
+SSEVSOutput RenderThread::VSOutputs[DefaultScratchSize];
+SSEPSOutput RenderThread::PSOutputs[DefaultScratchSize];
+
 
 RenderThread::RenderThread(uint32_t id)
     : ID(id)
@@ -61,6 +67,8 @@ void RenderThread::SignalShutdown()
 
 void RenderThread::QueueRendering(SharedRenderData* renderData)
 {
+    assert(renderData->TheVertexBuffer->GetNumBlocks() < _countof(VSOutputs));
+
     {
         std::lock_guard<std::mutex> autoLock(RenderJobMutex);
         RenderJobs.push(renderData);
@@ -97,16 +105,22 @@ void RenderThread::ThreadProc()
         {
             // Stage 1: Vertex processing
 
+            uint64_t numBlocks = renderData->TheVertexBuffer->GetNumBlocks();
+            int rtWidth = renderData->RenderTarget->GetWidth();
+            int rtHeight = renderData->RenderTarget->GetHeight();
+            int rtPitchInPixels = renderData->RenderTarget->GetPitchInPixels();
+            uint32_t* renderTarget = (uint32_t*)renderData->RenderTarget->GetData();
+
             uint64_t iVertexBlock = renderData->ProcessedVertices++;
-            while (iVertexBlock < renderData->NumVertexBlocks)
+            while (iVertexBlock < numBlocks)
             {
-                renderData->VertexShader(renderData->VSConstantBuffer, renderData->VertexBuffer[iVertexBlock], renderData->VSOutputs[iVertexBlock]);
+                renderData->VertexShader(renderData->VSConstantBuffer, renderData->TheVertexBuffer->GetBlocks()[iVertexBlock], VSOutputs[iVertexBlock]);
 
                 // Load result to work on it
-                __m128 x = _mm_load_ps(renderData->VSOutputs[iVertexBlock].Position_x);
-                __m128 y = _mm_load_ps(renderData->VSOutputs[iVertexBlock].Position_y);
-                __m128 z = _mm_load_ps(renderData->VSOutputs[iVertexBlock].Position_z);
-                __m128 w = _mm_load_ps(renderData->VSOutputs[iVertexBlock].Position_w);
+                __m128 x = _mm_load_ps(VSOutputs[iVertexBlock].Position_x);
+                __m128 y = _mm_load_ps(VSOutputs[iVertexBlock].Position_y);
+                __m128 z = _mm_load_ps(VSOutputs[iVertexBlock].Position_z);
+                __m128 w = _mm_load_ps(VSOutputs[iVertexBlock].Position_w);
 
                 // Divide by w
                 x = _mm_div_ps(x, w);
@@ -114,14 +128,14 @@ void RenderThread::ThreadProc()
                 z = _mm_div_ps(z, w);
 
                 // Scale to viewport
-                x = _mm_mul_ps(_mm_add_ps(_mm_mul_ps(x, _mm_set1_ps(0.5f)), _mm_set1_ps(0.5f)), _mm_set1_ps((float)renderData->RTWidth));
-                y = _mm_mul_ps(_mm_sub_ps(_mm_set1_ps(1.f), _mm_add_ps(_mm_mul_ps(y, _mm_set1_ps(0.5f)), _mm_set1_ps(0.5f))), _mm_set1_ps((float)renderData->RTHeight));
+                x = _mm_mul_ps(_mm_add_ps(_mm_mul_ps(x, _mm_set1_ps(0.5f)), _mm_set1_ps(0.5f)), _mm_set1_ps((float)rtWidth));
+                y = _mm_mul_ps(_mm_sub_ps(_mm_set1_ps(1.f), _mm_add_ps(_mm_mul_ps(y, _mm_set1_ps(0.5f)), _mm_set1_ps(0.5f))), _mm_set1_ps((float)rtHeight));
 
                 // Store back result
-                _mm_store_ps(renderData->VSOutputs[iVertexBlock].Position_x, x);
-                _mm_store_ps(renderData->VSOutputs[iVertexBlock].Position_y, y);
-                _mm_store_ps(renderData->VSOutputs[iVertexBlock].Position_z, z);
-                _mm_store_ps(renderData->VSOutputs[iVertexBlock].Position_w, _mm_set1_ps(1.f));
+                _mm_store_ps(VSOutputs[iVertexBlock].Position_x, x);
+                _mm_store_ps(VSOutputs[iVertexBlock].Position_y, y);
+                _mm_store_ps(VSOutputs[iVertexBlock].Position_z, z);
+                _mm_store_ps(VSOutputs[iVertexBlock].Position_w, _mm_set1_ps(1.f));
 
                 iVertexBlock = renderData->ProcessedVertices++;
             }
@@ -150,9 +164,9 @@ void RenderThread::ThreadProc()
                 uint64_t iP3base = iP3 / 4;
                 uint64_t iP3off = iP3 % 4;
 
-                float2 p1(renderData->VSOutputs[iP1base].Position_x[iP1off], renderData->VSOutputs[iP1base].Position_y[iP1off]);
-                float2 p2(renderData->VSOutputs[iP2base].Position_x[iP2off], renderData->VSOutputs[iP2base].Position_y[iP2off]);
-                float2 p3(renderData->VSOutputs[iP3base].Position_x[iP3off], renderData->VSOutputs[iP3base].Position_y[iP3off]);
+                float2 p1(VSOutputs[iP1base].Position_x[iP1off], VSOutputs[iP1base].Position_y[iP1off]);
+                float2 p2(VSOutputs[iP2base].Position_x[iP2off], VSOutputs[iP2base].Position_y[iP2off]);
+                float2 p3(VSOutputs[iP3base].Position_x[iP3off], VSOutputs[iP3base].Position_y[iP3off]);
 
                 // edge equation Bx + Cy = 0, where B & C are computed from slope as B = (y1 - y0) and C = -(x1 - x0) or (x0 - x1).
                 float2 e1 = float2(p2.y - p1.y, p1.x - p2.x);
@@ -171,13 +185,13 @@ void RenderThread::ThreadProc()
 
                 static const int tileSize = 64;
 
-                for (int y = 0; y < renderData->RTHeight; y += tileSize)
+                for (int y = 0; y < rtHeight; y += tileSize)
                 {
-                    for (int x = 0; x < renderData->RTWidth; x += tileSize)
+                    for (int x = 0; x < rtWidth; x += tileSize)
                     {
                         sseProcessBlock(p1, p2, p3, e1, e2, e3, off1, off2, off3,
-                            renderData->RenderTarget, renderData->RTWidth, renderData->RTHeight,
-                            renderData->RTPitchInPixels, x, y, tileSize);
+                            renderTarget, rtWidth, rtHeight,
+                            rtPitchInPixels, x, y, tileSize);
                     }
                 }
 
