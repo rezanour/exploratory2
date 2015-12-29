@@ -1,14 +1,16 @@
 #pragma once
 
-class Texture
+class TRTexture2D
 {
+    NON_COPYABLE(TRTexture2D);
+
 public:
-    Texture(void* data, int width, int height, int pitchInPixels)
+    TRTexture2D(void* data, int width, int height, int pitchInPixels)
         : OwnsMemory(false), Data(data), Width(width), Height(height), PitchInPixels(pitchInPixels)
     {
     }
 
-    ~Texture()
+    ~TRTexture2D()
     {
         if (OwnsMemory)
         {
@@ -22,10 +24,6 @@ public:
     int GetWidth() const { return Width; }
     int GetHeight() const { return Height; }
     int GetPitchInPixels() const { return PitchInPixels; }
-
-private:
-    Texture(const Texture&) = delete;
-    Texture& operator= (const Texture&) = delete;
 
 private:
     bool OwnsMemory;

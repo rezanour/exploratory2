@@ -16,4 +16,8 @@
 
 typedef Microsoft::WRL::Wrappers::HandleT<Microsoft::WRL::Wrappers::HandleTraits::HANDLENullTraits> Thread;
 
+#define NON_COPYABLE(className) \
+    className(const className&) = delete;   \
+    className& operator= (const className&) = delete;
+
 #include "TurboRastTypes.h"

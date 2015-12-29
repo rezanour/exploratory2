@@ -1,9 +1,9 @@
 #include "Precomp.h"
 #include <d3d11.h>      // Device/swapchain for final framebuffer
 
-#include "Renderer.h"
+#include "Device.h"
 #include "VertexBuffer.h"
-#include "Texture.h"
+#include "Texture2D.h"
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -28,9 +28,9 @@ static ComPtr<ID3D11DeviceContext> Context;
 static ComPtr<ID3D11Texture2D> BackBuffer;
 static ComPtr<ID3D11Texture2D> CPUBuffer[MaxFramesInFlight];
 
-static std::unique_ptr<Renderer> TheRenderer;
-static std::unique_ptr<VertexBuffer> VertBuffer;
-static std::unique_ptr<Texture> RenderTargets[MaxFramesInFlight];
+static std::shared_ptr<TRDevice> TheDevice;
+static std::shared_ptr<TRVertexBuffer> VertBuffer;
+static std::shared_ptr<TRTexture2D> RenderTargets[MaxFramesInFlight];
 
 struct SimpleConstants
 {
@@ -269,8 +269,8 @@ using namespace DirectX;
 
 bool AppStartup()
 {
-    TheRenderer = std::make_unique<Renderer>();
-    if (!TheRenderer->Initialize(1))
+    TheDevice = std::make_shared<TRDevice>();
+    if (!TheDevice->Initialize())
     {
         assert(false);
         return false;
@@ -278,6 +278,7 @@ bool AppStartup()
 
     std::vector<Vertex> vertices;
     // Fill in vertices for triangle
+#define RENDER_MANY
 #ifdef RENDER_MANY
     for (float z = 5.f; z >= -5.f; z -= 1.f)
     {
@@ -297,27 +298,50 @@ bool AppStartup()
     vertices.push_back(Vertex(float3(0.5f, -0.5f, 0.f), float3(1.f, 0.f, 0.f)));
 #endif
 
-    VertBuffer = std::make_unique<VertexBuffer>();
+    VertBuffer = std::make_shared<TRVertexBuffer>();
     VertBuffer->Update(vertices.data(), vertices.size());
 
-    TheRenderer->IASetVertexBuffer(VertBuffer.get());
-    TheRenderer->VSSetShader(SimpleVertexShader);
-    TheRenderer->PSSetShader(SimplePixelShader);
-    TheRenderer->VSSetConstantBuffer(&ShaderConstants);
+    TheDevice->IASetVertexBuffer(VertBuffer);
+    TheDevice->VSSetShader(SimpleVertexShader);
+    TheDevice->PSSetShader(SimplePixelShader);
+    TheDevice->VSSetConstantBuffer(&ShaderConstants);
 
     XMStoreFloat4x4((XMFLOAT4X4*)&ShaderConstants.WorldMatrix, XMMatrixIdentity());
-    XMStoreFloat4x4((XMFLOAT4X4*)&ShaderConstants.ViewProjectionMatrix, XMMatrixMultiply(XMMatrixLookAtLH(XMVectorSet(0, 0, -5, 1), XMVectorSet(0, 0, 0, 1), XMVectorSet(0, 1, 0, 0)), XMMatrixPerspectiveFovLH(XMConvertToRadians(90.f), OutputWidth / (float)OutputHeight, 0.1f, 100.f)));
+    XMStoreFloat4x4((XMFLOAT4X4*)&ShaderConstants.ViewProjectionMatrix, XMMatrixMultiply(XMMatrixLookAtLH(XMVectorSet(0, 0, -10, 1), XMVectorSet(0, 0, 0, 1), XMVectorSet(0, 1, 0, 0)), XMMatrixPerspectiveFovLH(XMConvertToRadians(90.f), OutputWidth / (float)OutputHeight, 0.1f, 100.f)));
 
     return true;
 }
 
 void AppShutdown()
 {
-    TheRenderer = nullptr;
+    VertBuffer = nullptr;
+    for (int i = 0; i < _countof(RenderTargets); ++i)
+    {
+        RenderTargets[i] = nullptr;
+    }
+    TheDevice = nullptr;
 }
 
 bool DoFrame()
 {
+#define ENABLE_ANIMATION
+#ifdef ENABLE_ANIMATION
+    XMFLOAT4X4 transform;
+
+    static int totalFrameIndex = 0;
+    static float angle = -0.5f;
+    static float dir = -1.f;
+
+#ifdef RENDER_MANY
+    if (totalFrameIndex++ % 100 == 0) dir *= -1;
+#else
+    if (totalFrameIndex++ % 150 == 0) dir *= -1;
+#endif
+    angle += dir * 0.0125f;
+    XMStoreFloat4x4(&transform, XMMatrixRotationY(angle));
+    memcpy_s(&ShaderConstants.WorldMatrix, sizeof(matrix4x4), &transform, sizeof(transform));
+#endif
+
     D3D11_MAPPED_SUBRESOURCE mapped{};
     HRESULT hr = Context->Map(CPUBuffer[FrameIndex].Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
     if (FAILED(hr))
@@ -326,14 +350,15 @@ bool DoFrame()
         return false;
     }
 
-    if (!RenderTargets[FrameIndex])
+    if (!RenderTargets[FrameIndex] || (RenderTargets[FrameIndex]->GetData() != mapped.pData))
     {
-        RenderTargets[FrameIndex] = std::make_unique<Texture>(mapped.pData, (int)OutputWidth, (int)OutputHeight, (int)mapped.RowPitch / (int)sizeof(uint32_t));
+        RenderTargets[FrameIndex] = std::make_shared<TRTexture2D>(mapped.pData, (int)OutputWidth, (int)OutputHeight, (int)mapped.RowPitch / (int)sizeof(uint32_t));
     }
    
-    TheRenderer->OMSetRenderTarget(RenderTargets[FrameIndex].get());
-    TheRenderer->Draw(VertBuffer->GetNumVertices(), 0);
+    TheDevice->OMSetRenderTarget(RenderTargets[FrameIndex]);
+    TheDevice->Draw(VertBuffer->GetNumVertices(), 0);
 
+    TheDevice->FlushAndWait();
     Context->Unmap(CPUBuffer[FrameIndex].Get(), 0);
 
     // Copy the CPU buffer to the back buffer
@@ -369,7 +394,10 @@ void __vectorcall SimpleVertexShader(const void* const constants, const SSEVerte
 
     const matrix4x4* matrices[] = { &vsConstants->WorldMatrix, &vsConstants->ViewProjectionMatrix };
 
-    __m128 vx, vy, vz, vw;
+    __m128 vx = x;
+    __m128 vy = y;
+    __m128 vz = z;
+    __m128 vw = w;
     for (int i = 0; i < _countof(matrices); ++i)
     {
         // expanded multiply of all 4 positions by matrix

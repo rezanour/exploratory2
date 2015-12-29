@@ -1,15 +1,15 @@
 #include "Precomp.h"
 #include "VertexBuffer.h"
 
-VertexBuffer::VertexBuffer()
+TRVertexBuffer::TRVertexBuffer()
 {
 }
 
-VertexBuffer::~VertexBuffer()
+TRVertexBuffer::~TRVertexBuffer()
 {
 }
 
-void VertexBuffer::Update(const Vertex* vertices, uint64_t numVertices)
+void TRVertexBuffer::Update(const Vertex* vertices, uint64_t numVertices)
 {
     NumVertices = numVertices;
 

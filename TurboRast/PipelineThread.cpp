@@ -1,46 +1,33 @@
 #include "Precomp.h"
-#include "RenderThread.h"
+#include "Pipeline.h"
+#include "PipelineThread.h"
 #include "VertexBuffer.h"
-#include "Texture.h"
+#include "Texture2D.h"
 
 using namespace Microsoft::WRL::Wrappers;
 
-uint32_t RenderThread::NumThreads = 0;
-static const uint32_t DefaultScratchSize = 65536;
-SSEVSOutput RenderThread::VSOutputs[DefaultScratchSize];
-SSEPSOutput RenderThread::PSOutputs[DefaultScratchSize];
-
-
-RenderThread::RenderThread(uint32_t id)
+TRPipelineThread::TRPipelineThread(int id, TRPipeline* pipeline, SharedPipelineData* sharedData)
     : ID(id)
+    , Pipeline(pipeline)
+    , SharedData(sharedData)
 {
-    ++NumThreads;
 }
 
-RenderThread::~RenderThread()
+TRPipelineThread::~TRPipelineThread()
 {
     if (TheThread.IsValid())
     {
-        assert(ShutdownEvent.IsValid());
-
-        SignalShutdown();
-        WaitForSingleObject(TheThread.Get(), ShutdownTimeoutMilliseconds);
+        // If the thread was created, assert that it's exited by now.
+        // It's the responsibility of the Pipeline object to shut these down
+        assert(WaitForSingleObject(TheThread.Get(), 0) == WAIT_OBJECT_0);
     }
 }
 
-bool RenderThread::Initialize()
+bool TRPipelineThread::Initialize()
 {
-    // Initialize shutdown event
-    ShutdownEvent.Attach(CreateEvent(nullptr, TRUE, FALSE, nullptr));
-    if (!ShutdownEvent.IsValid())
-    {
-        assert(false);
-        return false;
-    }
-
-    // Initialize the RenderJobReady event
-    RenderJobReady.Attach(CreateEvent(nullptr, FALSE, FALSE, nullptr));
-    if (!RenderJobReady.IsValid())
+    // Initialize the CommandReady event
+    CommandReady.Attach(CreateEvent(nullptr, FALSE, FALSE, nullptr));
+    if (!CommandReady.IsValid())
     {
         assert(false);
         return false;
@@ -57,64 +44,56 @@ bool RenderThread::Initialize()
     return true;
 }
 
-void RenderThread::SignalShutdown()
+void TRPipelineThread::QueueCommand(const std::shared_ptr<RenderCommand>& command)
 {
-    if (ShutdownEvent.IsValid())
     {
-        SetEvent(ShutdownEvent.Get());
+        auto lock = CommandsLock.Lock();
+        Commands.push_back(command);
     }
+    SetEvent(CommandReady.Get());
 }
 
-void RenderThread::QueueRendering(SharedRenderData* renderData)
+DWORD CALLBACK TRPipelineThread::s_ThreadProc(PVOID context)
 {
-    assert(renderData->TheVertexBuffer->GetNumBlocks() < _countof(VSOutputs));
-
-    {
-        std::lock_guard<std::mutex> autoLock(RenderJobMutex);
-        RenderJobs.push(renderData);
-    }
-    SetEvent(RenderJobReady.Get());
-}
-
-DWORD CALLBACK RenderThread::s_ThreadProc(PVOID context)
-{
-    RenderThread* pThis = static_cast<RenderThread*>(context);
+    TRPipelineThread* pThis = static_cast<TRPipelineThread*>(context);
     pThis->ThreadProc();
     return 0;
 }
 
-void RenderThread::ThreadProc()
+void TRPipelineThread::ThreadProc()
 {
-    const HANDLE hSignals[] = { ShutdownEvent.Get(), RenderJobReady.Get() };
+    const HANDLE hSignals[] = { SharedData->ShutdownEvent, CommandReady.Get() };
     DWORD result = WaitForMultipleObjects(_countof(hSignals), hSignals, FALSE, INFINITE);
     while (result != WAIT_OBJECT_0)
     {
-        SharedRenderData* renderData = nullptr;
+        std::shared_ptr<RenderCommand> command;
 
         // Read next job out, if any
         {
-            std::lock_guard<std::mutex> autoLock(RenderJobMutex);
-            if (!RenderJobs.empty())
+            auto lock = CommandsLock.Lock();
+
+            if (!Commands.empty())
             {
-                renderData = RenderJobs.front();
-                RenderJobs.pop();
+                command = Commands.front();
+                Commands.pop_front();
             }
         }
 
-        while (renderData)
+        while (command)
         {
             // Stage 1: Vertex processing
 
-            uint64_t numBlocks = renderData->TheVertexBuffer->GetNumBlocks();
-            int rtWidth = renderData->RenderTarget->GetWidth();
-            int rtHeight = renderData->RenderTarget->GetHeight();
-            int rtPitchInPixels = renderData->RenderTarget->GetPitchInPixels();
-            uint32_t* renderTarget = (uint32_t*)renderData->RenderTarget->GetData();
+            uint64_t numBlocks = command->VertexBuffer->GetNumBlocks();
+            int rtWidth = command->RenderTarget->GetWidth();
+            int rtHeight = command->RenderTarget->GetHeight();
+            int rtPitchInPixels = command->RenderTarget->GetPitchInPixels();
+            uint32_t* renderTarget = (uint32_t*)command->RenderTarget->GetData();
+            SSEVSOutput* VSOutputs = SharedData->VSOutputs;
 
-            uint64_t iVertexBlock = renderData->ProcessedVertices++;
+            uint64_t iVertexBlock = SharedData->CurrentVertex++;
             while (iVertexBlock < numBlocks)
             {
-                renderData->VertexShader(renderData->VSConstantBuffer, renderData->TheVertexBuffer->GetBlocks()[iVertexBlock], VSOutputs[iVertexBlock]);
+                command->VertexShader(command->VSConstantBuffer, command->VertexBuffer->GetBlocks()[iVertexBlock], VSOutputs[iVertexBlock]);
 
                 // Load result to work on it
                 __m128 x = _mm_load_ps(VSOutputs[iVertexBlock].Position_x);
@@ -137,7 +116,7 @@ void RenderThread::ThreadProc()
                 _mm_store_ps(VSOutputs[iVertexBlock].Position_z, z);
                 _mm_store_ps(VSOutputs[iVertexBlock].Position_w, _mm_set1_ps(1.f));
 
-                iVertexBlock = renderData->ProcessedVertices++;
+                iVertexBlock = SharedData->CurrentVertex++;
             }
 
             // Stage 2: Triangle processing
@@ -150,8 +129,8 @@ void RenderThread::ThreadProc()
             //   * When sort order matters (blending, no depth reject, etc...), we need to be careful to maintain draw order
             //   * Should pixel processing be lifted out separately from triangle processing? How can we efficiently do this?
 
-            uint64_t iTriangle = renderData->ProcessedTriangles++;
-            while (iTriangle < renderData->NumTriangles)
+            uint64_t iTriangle = SharedData->CurrentTriangle++;
+            while (iTriangle < command->NumTriangles)
             {
                 uint64_t iP1 = iTriangle * 3;
                 uint64_t iP2 = iP1 + 1;
@@ -195,20 +174,60 @@ void RenderThread::ThreadProc()
                     }
                 }
 
-                iTriangle = renderData->ProcessedTriangles++;
+                iTriangle = SharedData->CurrentTriangle++;
             }
 
             // Stage 3: Fragment/pixel processing (if applicable)
 
-            renderData = nullptr;
+            // Stage 4: Join & Do some serial work from last thread through, then unblock other threads
+
+            // Before checking join barrier, try to reset the wait barrier. If it's already reset,
+            // this is benign. If it's not, we know that not all threads are through the join barrier yet (we ourselves aren't)
+            // so we know we're not competing with the signaler. Also, if we are the first one through the join barrier,
+            // we will be reseting before anyone (us) waits on this. If others are already waiting on this, that means they
+            // went through the barrier already and already reset, making ours benign
+            SharedData->WaitBarrier.store(0);
+
+            if (++SharedData->JoinBarrier == SharedData->NumThreads)
+            {
+                // Last one through the barrier, reset & do serial work
+                SharedData->JoinBarrier.store(0);
+
+                // Signal completion of this work
+                Pipeline->NotifyCompletion(command->FenceValue);
+
+                // Reset some internal shared state
+                SharedData->CurrentVertex = 0;
+                SharedData->CurrentTriangle = 0;
+
+                // Signal the wait barrier
+                SharedData->WaitBarrier.store(1);
+            }
+            else
+            {
+                int compareTo = 1;
+                while (!SharedData->WaitBarrier.compare_exchange_strong(compareTo, 1))
+                {
+                    // Allow other threads to make progress
+                    _mm_pause();
+                    _mm_pause();
+                    _mm_pause();
+                    _mm_pause();
+                    _mm_pause();
+                }
+            }
 
             // Read next job out, if any
             {
-                std::lock_guard<std::mutex> autoLock(RenderJobMutex);
-                if (!RenderJobs.empty())
+                auto lock = CommandsLock.Lock();
+                if (!Commands.empty())
                 {
-                    renderData = RenderJobs.front();
-                    RenderJobs.pop();
+                    command = Commands.front();
+                    Commands.pop_front();
+                }
+                else
+                {
+                    command = nullptr;
                 }
             }
         }
@@ -218,7 +237,7 @@ void RenderThread::ThreadProc()
     }
 }
 
-void RenderThread::sseProcessBlock(
+void TRPipelineThread::sseProcessBlock(
     const float2& p1, const float2& p2, const float2& p3,   // three triangle vertices
     const float2& e1, const float2& e2, const float2& e3,   // three edge equations
     const float2& o1, const float2& o2, const float2& o3,   // three rejection corner offsets

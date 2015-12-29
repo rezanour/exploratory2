@@ -2,8 +2,8 @@
 
 #include "TurboRastMath.h"
 
-class VertexBuffer;
-class Texture;
+class TRVertexBuffer;
+class TRTexture2D;
 
 // TODO: Only support one type of vertex currently. Need to find a good way to efficiently handle arbitrary vertices
 struct Vertex
@@ -77,26 +77,3 @@ typedef void(__vectorcall * pfnSSEVertexShader)(const void* const constantBuffer
 
 // Process 4 pixels at a time
 typedef void(__vectorcall * pfnSSEPixelShader)(const void* const constantBuffer, const SSEVSOutput& input, SSEPSOutput& output);
-
-// Describes a block of rendering to do across the threads.
-struct SharedRenderData
-{
-    uint64_t JobID;
-
-    // Pipeline
-    const Texture* RenderTarget;
-    pfnSSEVertexShader VertexShader;
-    pfnSSEPixelShader PixelShader;
-    void* VSConstantBuffer;
-    void* PSConstantBuffer;
-
-    std::atomic_uint64_t ProcessedVertices;
-    uint64_t NumVertices;
-
-    const VertexBuffer* TheVertexBuffer;
-
-    // Currently, only support triangle list
-    std::atomic_uint64_t ProcessedTriangles;
-    uint64_t NumTriangles;
-};
-
