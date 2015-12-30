@@ -20,7 +20,7 @@ struct Triangle
 
 struct Bin
 {
-    static const size_t MaxTrianglesPerBin = 128 * 1024; // 128K
+    static const size_t MaxTrianglesPerBin = 64 * 1024; // 128K
     Triangle Triangles[MaxTrianglesPerBin];
     std::atomic_uint64_t CurrentTriangle;
 };

@@ -41,8 +41,9 @@ private:
 
     static void sseProcessBlock(
         const Triangle& triangle,
-        uint32_t* renderTarget, int rtWidth, int rtHeight, int rtPitchPixels,
-        int top_left_x, int top_left_y, int tileSize);          // in pixels
+        int top_left_x, int top_left_y, int tileSize,
+        uint32_t* renderTarget, int rtWidth, int rtHeight, int rtPitchPixels);
+
 
 private:
     int ID;

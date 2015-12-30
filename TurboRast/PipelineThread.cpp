@@ -235,9 +235,10 @@ void TRPipelineThread::ProcessOneTrianglePerThread(const std::shared_ptr<RenderC
         {
             for (int x = 0; x < rtWidth; x += SharedData->TileSize)
             {
-                sseProcessBlock(triangle,
-                    renderTarget, rtWidth, rtHeight,
-                    rtPitchInPixels, x, y, SharedData->TileSize);
+                sseProcessBlock(
+                    triangle,
+                    x, y, SharedData->TileSize,
+                    renderTarget, rtWidth, rtHeight, rtPitchInPixels);
             }
         }
 
@@ -356,13 +357,15 @@ void TRPipelineThread::ProcessOneTilePerThread(const std::shared_ptr<RenderComma
     {
         auto& bin = SharedData->Bins[iBin];
 
+        int x = (iBin % SharedData->NumHorizBins) * SharedData->TileSize;
+        int y = (iBin / SharedData->NumHorizBins) * SharedData->TileSize;
+
         for (iTriangle = 0; iTriangle < bin.CurrentTriangle; ++iTriangle)
         {
-            sseProcessBlock(bin.Triangles[iTriangle],
-                renderTarget, rtWidth, rtHeight, rtPitchInPixels,
-                (iBin % SharedData->NumHorizBins) * SharedData->TileSize,
-                (iBin / SharedData->NumHorizBins) * SharedData->TileSize,
-                SharedData->TileSize);
+            sseProcessBlock(
+                bin.Triangles[iTriangle],
+                x, y, SharedData->TileSize,
+                renderTarget, rtWidth, rtHeight, rtPitchInPixels);
         }
         iBin = SharedData->CurrentBin++;
     }
@@ -480,10 +483,10 @@ void TRPipelineThread::ProcessAndLogStats()
         // find absolute start & end across all threads
         uint64_t minVertexStart = SharedData->VertexStartTime[0];
         uint64_t maxVertexEnd = SharedData->VertexStopTime[0];
-        uint64_t avgVertexElapsed = maxVertexEnd - minVertexStart;
+        uint64_t totalVertexElapsed = maxVertexEnd - minVertexStart;
         uint64_t minTriangleStart = SharedData->TriangleStartTime[0];
         uint64_t maxTriangleEnd = SharedData->TriangleStopTime[0];
-        uint64_t avgTriangleElapsed = maxTriangleEnd - minTriangleStart;
+        uint64_t totalTriangleElapsed = maxTriangleEnd - minTriangleStart;
         for (int i = 1; i < SharedData->NumThreads; ++i)
         {
             // Vertex processing
@@ -495,7 +498,7 @@ void TRPipelineThread::ProcessAndLogStats()
             {
                 maxVertexEnd = SharedData->VertexStopTime[i];
             }
-            avgVertexElapsed += SharedData->VertexStopTime[i] - SharedData->VertexStartTime[i];
+            totalVertexElapsed += SharedData->VertexStopTime[i] - SharedData->VertexStartTime[i];
 
             // Triangle processing
             if (SharedData->TriangleStartTime[i] < minTriangleStart)
@@ -506,30 +509,29 @@ void TRPipelineThread::ProcessAndLogStats()
             {
                 maxTriangleEnd = SharedData->TriangleStopTime[i];
             }
-            avgTriangleElapsed += SharedData->TriangleStopTime[i] - SharedData->TriangleStartTime[i];
+            totalTriangleElapsed += SharedData->TriangleStopTime[i] - SharedData->TriangleStartTime[i];
         }
-
-        avgVertexElapsed /= SharedData->NumThreads;
-        avgTriangleElapsed /= SharedData->NumThreads;
 
         wchar_t message[1024];
         swprintf_s(message, L"Vertex Processing End to End: %3.2fms\n", 1000.0 * ((maxVertexEnd - minVertexStart) / (double)freq.QuadPart));
         OutputDebugString(message);
-        swprintf_s(message, L"Vertex Processing Avg per thread: %3.2fms\n", 1000.0 * (avgVertexElapsed / (double)freq.QuadPart));
+        swprintf_s(message, L"Vertex Processing Avg per thread: %3.2fms\n", 1000.0 * ((totalVertexElapsed / (double)SharedData->NumThreads) / (double)freq.QuadPart));
         OutputDebugString(message);
         swprintf_s(message, L"Triangle Processing End to End: %3.2fms\n", 1000.0 * ((maxTriangleEnd - minTriangleStart) / (double)freq.QuadPart));
         OutputDebugString(message);
-        swprintf_s(message, L"Triangle Processing Avg per thread: %3.2fms\n", 1000.0 * (avgTriangleElapsed / (double)freq.QuadPart));
+        swprintf_s(message, L"Triangle Processing Avg per thread: %3.2fms\n", 1000.0 * ((totalTriangleElapsed / (double)SharedData->NumThreads) / (double)freq.QuadPart));
         OutputDebugString(message);
     }
 }
 
+
 void TRPipelineThread::sseProcessBlock(
     const Triangle& triangle,
-    uint32_t* renderTarget, int rtWidth, int rtHeight, int rtPitchPixels,
-    int top_left_x, int top_left_y, int tileSize)          // in pixels
+    int top_left_x, int top_left_y, int tileSize,
+    uint32_t* renderTarget, int rtWidth, int rtHeight, int rtPitchPixels)
+    
 {
-    const int size = tileSize / 4;
+    const int size = tileSize >> 2;
 
     assert(size > 0);
 
@@ -607,74 +609,59 @@ void TRPipelineThread::sseProcessBlock(
         __m128 screenclipmask = _mm_cmpge_ps(base_corner_x, _mm_set1_ps((float)rtWidth));
 
         // convert to integer mask for easier testing below
-        __m128i imask = _mm_cvtps_epi32(_mm_or_ps(mask, screenclipmask));
+        int imask = _mm_movemask_ps(_mm_or_ps(mask, screenclipmask));
 
         if (size > 1)
         {
             // recurse sub tiles
-            if (_mm_testz_si128(imask, _mm_set_epi32(0xFFFFFFFF, 0, 0, 0)))
+            if ((imask & 0x08) == 0)
             {
-                sseProcessBlock(triangle, renderTarget, rtWidth, rtHeight, rtPitchPixels, top_left_x, y, size);
+                sseProcessBlock(
+                    triangle,
+                    top_left_x, y, size,
+                    renderTarget, rtWidth, rtHeight, rtPitchPixels);
             }
-            if (_mm_testz_si128(imask, _mm_set_epi32(0, 0xFFFFFFFF, 0, 0)))
+            if ((imask & 0x04) == 0)
             {
-                sseProcessBlock(triangle, renderTarget, rtWidth, rtHeight, rtPitchPixels, top_left_x + size, y, size);
+                sseProcessBlock(
+                    triangle,
+                    top_left_x + size, y, size,
+                    renderTarget, rtWidth, rtHeight, rtPitchPixels);
             }
-            if (_mm_testz_si128(imask, _mm_set_epi32(0, 0, 0xFFFFFFFF, 0)))
+            if ((imask & 0x02) == 0)
             {
-                sseProcessBlock(triangle, renderTarget, rtWidth, rtHeight, rtPitchPixels, top_left_x + 2 * size, y, size);
+                sseProcessBlock(
+                    triangle,
+                    top_left_x + 2 * size, y, size,
+                    renderTarget, rtWidth, rtHeight, rtPitchPixels);
             }
-            if (_mm_testz_si128(imask, _mm_set_epi32(0, 0, 0, 0xFFFFFFFF)))
+            if ((imask & 0x01) == 0)
             {
-                sseProcessBlock(triangle, renderTarget, rtWidth, rtHeight, rtPitchPixels, top_left_x + 3 * size, y, size);
+                sseProcessBlock(
+                    triangle,
+                    top_left_x + 3 * size, y, size,
+                    renderTarget, rtWidth, rtHeight, rtPitchPixels);
             }
         }
         else
         {
             // rasterize the pixels!
-            renderTarget[y * rtPitchPixels + (top_left_x)] = 0xFFFF0000;
-            renderTarget[y * rtPitchPixels + (top_left_x + 1)] = 0xFFFF0000;
-            renderTarget[y * rtPitchPixels + (top_left_x + 2)] = 0xFFFF0000;
-            renderTarget[y * rtPitchPixels + (top_left_x + 3)] = 0xFFFF0000;
-#if 0
-            SSEVSOutput output;
-            __m128 barymask;
-            rz_lerp(triangle, base_corner_x, base_corner_y, barymask, &output);
-            imask = _mm_cvtps_epi32(_mm_or_ps(mask, barymask));
-
-            if (_mm_testz_si128(imask, _mm_set_epi32(0xFFFFFFFF, 0, 0, 0)))
+            if ((imask & 0x08) == 0)
             {
-                RenderTarget[y * RTPitchPixels + top_left_x] =
-                    0xFF000000 |
-                    (uint32_t)((uint8_t)(output.color_z[3] * 255.f)) << 16 |
-                    (uint32_t)((uint8_t)(output.color_y[3] * 255.f)) << 8 |
-                    (uint32_t)((uint8_t)(output.color_x[3] * 255.f));
+                renderTarget[y * rtPitchPixels + top_left_x] = 0xFFFF0000;
             }
-            if (_mm_testz_si128(imask, _mm_set_epi32(0, 0xFFFFFFFF, 0, 0)))
+            if ((imask & 0x04) == 0)
             {
-                RenderTarget[y * RTPitchPixels + (top_left_x + 1)] =
-                    0xFF000000 |
-                    (uint32_t)((uint8_t)(output.color_z[2] * 255.f)) << 16 |
-                    (uint32_t)((uint8_t)(output.color_y[2] * 255.f)) << 8 |
-                    (uint32_t)((uint8_t)(output.color_x[2] * 255.f));
+                renderTarget[y * rtPitchPixels + (top_left_x + size)] = 0xFFFF0000;
             }
-            if (_mm_testz_si128(imask, _mm_set_epi32(0, 0, 0xFFFFFFFF, 0)))
+            if ((imask & 0x02) == 0)
             {
-                RenderTarget[y * RTPitchPixels + (top_left_x + 2)] =
-                    0xFF000000 |
-                    (uint32_t)((uint8_t)(output.color_z[1] * 255.f)) << 16 |
-                    (uint32_t)((uint8_t)(output.color_y[1] * 255.f)) << 8 |
-                    (uint32_t)((uint8_t)(output.color_x[1] * 255.f));
+                renderTarget[y * rtPitchPixels + (top_left_x + 2 * size)] = 0xFFFF0000;
             }
-            if (_mm_testz_si128(imask, _mm_set_epi32(0, 0, 0, 0xFFFFFFFF)))
+            if ((imask & 0x01) == 0)
             {
-                RenderTarget[y * RTPitchPixels + (top_left_x + 3)] =
-                    0xFF000000 |
-                    (uint32_t)((uint8_t)(output.color_z[0] * 255.f)) << 16 |
-                    (uint32_t)((uint8_t)(output.color_y[0] * 255.f)) << 8 |
-                    (uint32_t)((uint8_t)(output.color_x[0] * 255.f));
+                renderTarget[y * rtPitchPixels + (top_left_x + 3 * size)] = 0xFFFF0000;
             }
-#endif
         }
     }
 }

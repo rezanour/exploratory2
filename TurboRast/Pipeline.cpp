@@ -2,6 +2,30 @@
 #include "Pipeline.h"
 #include "PipelineThread.h"
 
+static int GetNumLogicalCores()
+{
+    SYSTEM_LOGICAL_PROCESSOR_INFORMATION procInfos[64];
+    DWORD sizeOfProcInfos = sizeof(procInfos);
+    if (GetLogicalProcessorInformation(procInfos, &sizeOfProcInfos))
+    {
+        int numProcInfos = sizeOfProcInfos / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION);
+        int numLogicalCores = 0;
+        for (int i = 0; i < numProcInfos; ++i)
+        {
+            if (procInfos[i].Relationship == RelationProcessorCore)
+            {
+                numLogicalCores += (int)_mm_popcnt_u64(procInfos[i].ProcessorMask);
+            }
+        }
+        return numLogicalCores;
+    }
+    else
+    {
+        assert(false);
+        return 1;
+    }
+}
+
 TRPipeline::TRPipeline()
 {
 }
@@ -42,16 +66,19 @@ bool TRPipeline::Initialize()
         return false;
     }
 
-    // TODO: formalize numThreads determination
-    // Note that going over 4-6 threads starts to actually slow down significantly
-    // due to spin overhead waiting on other threads to catch up at join points.
-    // The threading system needs some additional consideration. Improvements
-    // to the synchronization can certainly be made, but may also want to look into
-    // using Windows UMS (user mode scheduling) to micro-manage the threads.
-    SharedData.NumThreads = 4;
+    // Note that matching (or exceeding) the number of logical CPUs on the system
+    // reduces performance due to thread starvation and spin contention.
+    // Remember that the main render thread (app render thread) is still running
+    // and submitting more commands, flushing, etc... so it will claim at least 1
+    // thread from the # of logical CPUs. And since we aren't doing any IO at the
+    // moment, we are purely CPU bound on the worker threads. So, a decent number
+    // to pick here is 1 or 2 less than the total # of logical CPUs.
+    // NOTE: It may also be useful to look into using Windows UMS to micro-manage the threads.
+    SharedData.NumThreads = std::max(GetNumLogicalCores() - 2, 1);
+
     SharedData.ShutdownEvent = ShutdownEvent.Get();
 
-    SharedData.StatsEnabled = false;
+    SharedData.StatsEnabled = true;
     if (SharedData.StatsEnabled)
     {
         SharedData.VertexStartTime = new uint64_t[SharedData.NumThreads];
@@ -109,9 +136,7 @@ void TRPipeline::FlushAndWait()
 {
     while (LastCompletedFenceValue < CurrentFenceValue)
     {
-        // Allow other threads & hyperthreads to make progress
-        // before checking again
-        _mm_pause();
+        ::Sleep(1);
     }
 }
 
