@@ -50,8 +50,8 @@ static bool AppStartup();
 static void AppShutdown();
 static bool DoFrame();
 
-static void __vectorcall SimpleVertexShader(const void* const constants, const SSEVertexBlock& input, SSEVSOutput& output);
-static void __vectorcall SimplePixelShader(const void* const constants, const SSEVSOutput& input, SSEPSOutput& output);
+static vs_output __vectorcall SimpleVertexShader(const void* const constants, const vs_input input);
+static vec4 __vectorcall SimplePixelShader(const void* const constants, const vs_output input);
 
 static LRESULT CALLBACK AppWinProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -280,7 +280,7 @@ bool AppStartup()
     // Fill in vertices for triangle
 #define RENDER_MANY
 #ifdef RENDER_MANY
-    for (float z = 5.f; z >= -5.f; z -= 1.f)
+    for (float z = 5.f; z >= -5.f; z -= 0.25f)
     {
         for (float y = 5.f; y >= -5.f; y -= 0.25f)
         {
@@ -293,9 +293,12 @@ bool AppStartup()
         }
     }
 #else
-    vertices.push_back(Vertex(float3(-0.5f, -0.5f, 0.f), float3(0.f, 0.f, 1.f)));
-    vertices.push_back(Vertex(float3(0.f, 0.5f, 0.f), float3(0.f, 1.f, 0.f)));
-    vertices.push_back(Vertex(float3(0.5f, -0.5f, 0.f), float3(1.f, 0.f, 0.f)));
+    for (int i = 0; i < 1; ++i)
+    {
+        vertices.push_back(Vertex(float3(-0.5f, -0.5f, 0.f), float3(0.f, 0.f, 1.f)));
+        vertices.push_back(Vertex(float3(0.f, 0.5f, 0.f), float3(0.f, 1.f, 0.f)));
+        vertices.push_back(Vertex(float3(0.5f, -0.5f, 0.f), float3(1.f, 0.f, 0.f)));
+    }
 #endif
 
     VertBuffer = std::make_shared<TRVertexBuffer>();
@@ -307,7 +310,7 @@ bool AppStartup()
     TheDevice->VSSetConstantBuffer(&ShaderConstants);
 
     XMStoreFloat4x4((XMFLOAT4X4*)&ShaderConstants.WorldMatrix, XMMatrixIdentity());
-    XMStoreFloat4x4((XMFLOAT4X4*)&ShaderConstants.ViewProjectionMatrix, XMMatrixMultiply(XMMatrixLookAtLH(XMVectorSet(0, 0, -8, 1), XMVectorSet(0, 0, 0, 1), XMVectorSet(0, 1, 0, 0)), XMMatrixPerspectiveFovLH(XMConvertToRadians(90.f), OutputWidth / (float)OutputHeight, 0.1f, 100.f)));
+    XMStoreFloat4x4((XMFLOAT4X4*)&ShaderConstants.ViewProjectionMatrix, XMMatrixMultiply(XMMatrixLookAtLH(XMVectorSet(0, 0, -8.f, 1), XMVectorSet(0, 0, 0, 1), XMVectorSet(0, 1, 0, 0)), XMMatrixPerspectiveFovLH(XMConvertToRadians(90.f), OutputWidth / (float)OutputHeight, 0.1f, 100.f)));
 
     return true;
 }
@@ -385,21 +388,17 @@ bool DoFrame()
     return true;
 }
 
-void __vectorcall SimpleVertexShader(const void* const constants, const SSEVertexBlock& input, SSEVSOutput& output)
+vs_output __vectorcall SimpleVertexShader(const void* const constants, const vs_input input)
 {
     const SimpleConstants* const vsConstants = (const SimpleConstants* const)constants;
 
-    __m128 x = _mm_load_ps(input.Position_x);
-    __m128 y = _mm_load_ps(input.Position_y);
-    __m128 z = _mm_load_ps(input.Position_z);
-    __m128 w = _mm_set1_ps(1.f);
+    vs_output output;
+
+    vec4 position{ input.Position.x, input.Position.y, input.Position.z, _mm_set1_ps(1.f) };
 
     const matrix4x4* matrices[] = { &vsConstants->WorldMatrix, &vsConstants->ViewProjectionMatrix };
 
-    __m128 vx = x;
-    __m128 vy = y;
-    __m128 vz = z;
-    __m128 vw = w;
+    vec4 pos2 = position;
     for (int i = 0; i < _countof(matrices); ++i)
     {
         // expanded multiply of all 4 positions by matrix
@@ -412,50 +411,34 @@ void __vectorcall SimpleVertexShader(const void* const constants, const SSEVerte
         __m128 my = _mm_set1_ps(matrices[i]->m[1][0]);
         __m128 mz = _mm_set1_ps(matrices[i]->m[2][0]);
         __m128 mw = _mm_set1_ps(matrices[i]->m[3][0]);
-        vx = _mm_add_ps(_mm_mul_ps(mx, x), _mm_add_ps(_mm_mul_ps(my, y), _mm_add_ps(_mm_mul_ps(mz, z), _mm_mul_ps(mw, w))));
+        pos2.x = _mm_add_ps(_mm_mul_ps(mx, position.x), _mm_add_ps(_mm_mul_ps(my, position.y), _mm_add_ps(_mm_mul_ps(mz, position.z), _mm_mul_ps(mw, position.w))));
         mx = _mm_set1_ps(matrices[i]->m[0][1]);
         my = _mm_set1_ps(matrices[i]->m[1][1]);
         mz = _mm_set1_ps(matrices[i]->m[2][1]);
         mw = _mm_set1_ps(matrices[i]->m[3][1]);
-        vy = _mm_add_ps(_mm_mul_ps(mx, x), _mm_add_ps(_mm_mul_ps(my, y), _mm_add_ps(_mm_mul_ps(mz, z), _mm_mul_ps(mw, w))));
+        pos2.y = _mm_add_ps(_mm_mul_ps(mx, position.x), _mm_add_ps(_mm_mul_ps(my, position.y), _mm_add_ps(_mm_mul_ps(mz, position.z), _mm_mul_ps(mw, position.w))));
         mx = _mm_set1_ps(matrices[i]->m[0][2]);
         my = _mm_set1_ps(matrices[i]->m[1][2]);
         mz = _mm_set1_ps(matrices[i]->m[2][2]);
         mw = _mm_set1_ps(matrices[i]->m[3][2]);
-        vz = _mm_add_ps(_mm_mul_ps(mx, x), _mm_add_ps(_mm_mul_ps(my, y), _mm_add_ps(_mm_mul_ps(mz, z), _mm_mul_ps(mw, w))));
+        pos2.z = _mm_add_ps(_mm_mul_ps(mx, position.x), _mm_add_ps(_mm_mul_ps(my, position.y), _mm_add_ps(_mm_mul_ps(mz, position.z), _mm_mul_ps(mw, position.w))));
         mx = _mm_set1_ps(matrices[i]->m[0][3]);
         my = _mm_set1_ps(matrices[i]->m[1][3]);
         mz = _mm_set1_ps(matrices[i]->m[2][3]);
         mw = _mm_set1_ps(matrices[i]->m[3][3]);
-        vw = _mm_add_ps(_mm_mul_ps(mx, x), _mm_add_ps(_mm_mul_ps(my, y), _mm_add_ps(_mm_mul_ps(mz, z), _mm_mul_ps(mw, w))));
+        pos2.w = _mm_add_ps(_mm_mul_ps(mx, position.x), _mm_add_ps(_mm_mul_ps(my, position.y), _mm_add_ps(_mm_mul_ps(mz, position.z), _mm_mul_ps(mw, position.w))));
         // assign over to x,y,z,w so we can do next iteration back into vx,vy,vz,vw
-        x = vx;
-        y = vy;
-        z = vz;
-        w = vw;
+        position = pos2;
     }
 
-    _mm_store_ps(output.Position_x, vx);
-    _mm_store_ps(output.Position_y, vy);
-    _mm_store_ps(output.Position_z, vz);
-    _mm_store_ps(output.Position_w, vw);
+    output.Position = position;
+    output.Color = input.Color;
 
-    for (int i = 0; i < 4; ++i)
-    {
-        output.Color_x[i] = input.Color_x[i];
-        output.Color_y[i] = input.Color_y[i];
-        output.Color_z[i] = input.Color_z[i];
-    }
+    return output;
 }
 
-void __vectorcall SimplePixelShader(const void* const constants, const SSEVSOutput& input, SSEPSOutput& output)
+vec4 __vectorcall SimplePixelShader(const void* const constants, const vs_output input)
 {
     UNREFERENCED_PARAMETER(constants);
-    for (int i = 0; i < 4; ++i)
-    {
-        output.R[i] = input.Color_x[i];
-        output.G[i] = input.Color_y[i];
-        output.B[i] = input.Color_z[i];
-        output.A[i] = 1.f;
-    }
+    return vec4{ input.Color.x, input.Color.y, input.Color.z, _mm_set1_ps(1.f) };
 }

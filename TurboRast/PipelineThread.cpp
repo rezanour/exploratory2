@@ -147,28 +147,34 @@ void TRPipelineThread::ProcessVertices(const std::shared_ptr<RenderCommand>& com
     uint64_t iVertexBlock = SharedData->CurrentVertex++;
     while (iVertexBlock < numBlocks)
     {
-        command->VertexShader(command->VSConstantBuffer, command->VertexBuffer->GetBlocks()[iVertexBlock], VSOutputs[iVertexBlock]);
-
-        // Load result to work on it
-        __m128 x = _mm_load_ps(VSOutputs[iVertexBlock].Position_x);
-        __m128 y = _mm_load_ps(VSOutputs[iVertexBlock].Position_y);
-        __m128 z = _mm_load_ps(VSOutputs[iVertexBlock].Position_z);
-        __m128 w = _mm_load_ps(VSOutputs[iVertexBlock].Position_w);
+        auto& vin = command->VertexBuffer->GetBlocks()[iVertexBlock];
+        vs_input input
+        {
+            vec3{ _mm_load_ps(vin.Position_x), _mm_load_ps(vin.Position_y), _mm_load_ps(vin.Position_z) },
+            vec3{ _mm_load_ps(vin.Color_x), _mm_load_ps(vin.Color_y), _mm_load_ps(vin.Color_z) },
+        };
+        vs_output output = command->VertexShader(command->VSConstantBuffer, input);
 
         // Divide by w
-        x = _mm_div_ps(x, w);
-        y = _mm_div_ps(y, w);
-        z = _mm_div_ps(z, w);
+        output.Position.x = _mm_div_ps(output.Position.x, output.Position.w);
+        output.Position.y = _mm_div_ps(output.Position.y, output.Position.w);
+        output.Position.z = _mm_div_ps(output.Position.z, output.Position.w);
+        output.Position.w = _mm_set1_ps(1.f);
 
         // Scale to viewport
-        x = _mm_mul_ps(_mm_add_ps(_mm_mul_ps(x, _mm_set1_ps(0.5f)), _mm_set1_ps(0.5f)), _mm_set1_ps((float)rtWidth));
-        y = _mm_mul_ps(_mm_sub_ps(_mm_set1_ps(1.f), _mm_add_ps(_mm_mul_ps(y, _mm_set1_ps(0.5f)), _mm_set1_ps(0.5f))), _mm_set1_ps((float)rtHeight));
+        __m128 point5 = _mm_set1_ps(0.5f);
+        output.Position.x = _mm_mul_ps(_mm_add_ps(_mm_mul_ps(output.Position.x, point5), point5), _mm_set1_ps((float)rtWidth));
+        output.Position.y = _mm_mul_ps(_mm_sub_ps(_mm_set1_ps(1.f), _mm_add_ps(_mm_mul_ps(output.Position.y, point5), point5)), _mm_set1_ps((float)rtHeight));
 
         // Store back result
-        _mm_store_ps(VSOutputs[iVertexBlock].Position_x, x);
-        _mm_store_ps(VSOutputs[iVertexBlock].Position_y, y);
-        _mm_store_ps(VSOutputs[iVertexBlock].Position_z, z);
-        _mm_store_ps(VSOutputs[iVertexBlock].Position_w, _mm_set1_ps(1.f));
+        _mm_store_ps(VSOutputs[iVertexBlock].Position_x, output.Position.x);
+        _mm_store_ps(VSOutputs[iVertexBlock].Position_y, output.Position.y);
+        _mm_store_ps(VSOutputs[iVertexBlock].Position_z, output.Position.z);
+        _mm_store_ps(VSOutputs[iVertexBlock].Position_w, output.Position.w);
+
+        _mm_store_ps(VSOutputs[iVertexBlock].Color_x, output.Color.x);
+        _mm_store_ps(VSOutputs[iVertexBlock].Color_y, output.Color.y);
+        _mm_store_ps(VSOutputs[iVertexBlock].Color_z, output.Color.z);
 
         iVertexBlock = SharedData->CurrentVertex++;
     }
@@ -187,7 +193,6 @@ void TRPipelineThread::ProcessOneTrianglePerThread(const std::shared_ptr<RenderC
     int rtHeight = command->RenderTarget->GetHeight();
     int rtPitchInPixels = command->RenderTarget->GetPitchInPixels();
     uint32_t* renderTarget = (uint32_t*)command->RenderTarget->GetData();
-    SSEVSOutput* VSOutputs = SharedData->VSOutputs;
 
     if (SharedData->StatsEnabled)
     {
@@ -201,44 +206,163 @@ void TRPipelineThread::ProcessOneTrianglePerThread(const std::shared_ptr<RenderC
     uint64_t iTriangle = SharedData->CurrentTriangle++;
     while (iTriangle < command->NumTriangles)
     {
-        uint64_t iP1 = iTriangle * 3;
-        uint64_t iP2 = iP1 + 1;
-        uint64_t iP3 = iP2 + 1;
+        float4 tp1, tp2, tp3;
+        float3 tc1, tc2, tc3;
 
-        uint64_t iP1base = iP1 / 4;
-        uint64_t iP1off = iP1 % 4;
-        uint64_t iP2base = iP2 / 4;
-        uint64_t iP2off = iP2 % 4;
-        uint64_t iP3base = iP3 / 4;
-        uint64_t iP3off = iP3 % 4;
+        GetTriangleVerts(iTriangle, &tp1, &tp2, &tp3, &tc1, &tc2, &tc3);
 
         triangle.iTriangle = iTriangle;
-        triangle.p1 = float2(VSOutputs[iP1base].Position_x[iP1off], VSOutputs[iP1base].Position_y[iP1off]);
-        triangle.p2 = float2(VSOutputs[iP2base].Position_x[iP2off], VSOutputs[iP2base].Position_y[iP2off]);
-        triangle.p3 = float2(VSOutputs[iP3base].Position_x[iP3off], VSOutputs[iP3base].Position_y[iP3off]);
+        triangle.p1 = float2(tp1.x, tp1.y);
+        triangle.p2 = float2(tp2.x, tp2.y);
+        triangle.p3 = float2(tp3.x, tp3.y);
 
-        // edge equation Bx + Cy = 0, where B & C are computed from slope as B = (y1 - y0) and C = -(x1 - x0) or (x0 - x1).
-        triangle.e1 = float2(triangle.p2.y - triangle.p1.y, triangle.p1.x - triangle.p2.x);
-        triangle.e2 = float2(triangle.p3.y - triangle.p2.y, triangle.p2.x - triangle.p3.x);
-        triangle.e3 = float2(triangle.p1.y - triangle.p3.y, triangle.p3.x - triangle.p1.x);
+        vec4 p1 = { _mm_set1_ps(tp1.x), _mm_set1_ps(tp1.y), _mm_set1_ps(tp1.z), _mm_set1_ps(tp1.w) };
+        vec4 p2 = { _mm_set1_ps(tp2.x), _mm_set1_ps(tp2.y), _mm_set1_ps(tp2.z), _mm_set1_ps(tp2.w) };
+        vec4 p3 = { _mm_set1_ps(tp3.x), _mm_set1_ps(tp3.y), _mm_set1_ps(tp3.z), _mm_set1_ps(tp3.w) };
 
-        // compute corner offset x & y to add to top left corner to find
-        // trivial reject corner for each edge
-        triangle.o1.x = (triangle.e1.x < 0) ? 1.f : 0.f;
-        triangle.o1.y = (triangle.e1.y < 0) ? 1.f : 0.f;
-        triangle.o2.x = (triangle.e2.x < 0) ? 1.f : 0.f;
-        triangle.o2.y = (triangle.e2.y < 0) ? 1.f : 0.f;
-        triangle.o3.x = (triangle.e3.x < 0) ? 1.f : 0.f;
-        triangle.o3.y = (triangle.e3.y < 0) ? 1.f : 0.f;
+        vec3 c1 = { _mm_set1_ps(tc1.x), _mm_set1_ps(tc1.y), _mm_set1_ps(tc1.z) };
+        vec3 c2 = { _mm_set1_ps(tc2.x), _mm_set1_ps(tc2.y), _mm_set1_ps(tc2.z) };
+        vec3 c3 = { _mm_set1_ps(tc3.x), _mm_set1_ps(tc3.y), _mm_set1_ps(tc3.z) };
 
-        for (int y = 0; y < rtHeight; y += SharedData->TileSize)
+        float2 verts[] = { triangle.p1, triangle.p2, triangle.p3 };
+        uint32_t top = 0, bottom = 0, mid = 0;
+
+        for (uint32_t j = 0; j < 3; ++j)
         {
-            for (int x = 0; x < rtWidth; x += SharedData->TileSize)
+            if (verts[j].y > verts[bottom].y) bottom = j;
+            if (verts[j].y < verts[top].y) top = j;
+        }
+
+        for (uint32_t j = 0; j < 3; ++j)
+        {
+            if (j != top && j != bottom)
             {
-                sseProcessBlock(command, triangle,
-                    x, y, SharedData->TileSize,
-                    renderTarget, rtWidth, rtHeight, rtPitchInPixels);
+                mid = j;
+                break;
             }
+        }
+
+        // first, rasterize from top to other
+        float ytop = verts[top].y;
+        float ymid = verts[mid].y;
+        float ybottom = verts[bottom].y;
+
+        uint32_t left = (verts[mid].x < verts[bottom].x) ? mid : bottom;
+        uint32_t right = (left == mid) ? bottom : mid;
+
+        float step1 =
+            (verts[left].x - verts[top].x) /
+            (verts[left].y - verts[top].y);
+
+        float step2 =
+            (verts[right].x - verts[top].x) /
+            (verts[right].y - verts[top].y);
+
+        float x1 = verts[top].x;
+        float x2 = x1;
+
+        __m128 step = _mm_set_ps(0, 0, step2, step1);
+        __m128 spanx = _mm_set_ps(0, 0, x2, x1);
+
+        for (int y = (int)ytop; y < (int)ymid; ++y)
+        {
+            if (y < 0) continue;
+            if (y >= rtHeight) break;
+
+            // rasterize span from (x1,y) to (x2,y)
+            x1 = spanx.m128_f32[0];
+            x2 = spanx.m128_f32[1];
+            for (int x = (int)x1; x < (int)x2; x += 4)
+            {
+                if (x < 0) continue;
+                if (x >= rtWidth) break;
+
+                lerp_result lerp = sseLerp(p1, p2, p3, c1, c2, c3, vec2{ _mm_set_ps((float)x, x + 1.f, x + 2.f, x + 3.f), _mm_set1_ps((float)y) });
+                int imask = _mm_movemask_ps(lerp.mask);
+
+                vs_output input{ lerp.position, lerp.color };
+                vec4 frags = command->PixelShader(command->PixelShader, input);
+
+                uint32_t colors[4];
+                ConvertFragsToColors(frags, colors);
+
+                if ((imask & 0x08) == 0)
+                {
+                    renderTarget[y * rtPitchInPixels + x] = colors[3];
+                }
+                if ((imask & 0x04) == 0)
+                {
+                    renderTarget[y * rtPitchInPixels + x + 1] = colors[2];
+                }
+                if ((imask & 0x02) == 0)
+                {
+                    renderTarget[y * rtPitchInPixels + x + 2] = colors[1];
+                }
+                if ((imask & 0x01) == 0)
+                {
+                    renderTarget[y * rtPitchInPixels + x + 3] = colors[0];
+                }
+            }
+
+            spanx = _mm_add_ps(spanx, step);
+        }
+
+        // then, from other to bottom
+        left = (verts[top].x < verts[mid].x) ? top : mid;
+        right = (left == top) ? mid : top;
+
+        step1 =
+            (verts[bottom].x - verts[left].x) /
+            (verts[bottom].y - verts[left].y);
+
+        step2 =
+            (verts[bottom].x - verts[right].x) /
+            (verts[bottom].y - verts[right].y);
+
+        step = _mm_set_ps(0, 0, step2, step1);
+        spanx = _mm_set_ps(0, 0, x2, x1);
+
+        for (int y = (int)ymid; y < (int)ybottom; ++y)
+        {
+            if (y < 0) continue;
+            if (y >= rtHeight) break;
+
+            // rasterize span from (x1,y) to (x2,y)
+            x1 = spanx.m128_f32[0];
+            x2 = spanx.m128_f32[1];
+            for (int x = (int)x1; x < (int)x2; x += 4)
+            {
+                if (x < 0) continue;
+                if (x >= rtWidth) break;
+
+                lerp_result lerp = sseLerp(p1, p2, p3, c1, c2, c3, vec2{ _mm_set_ps((float)x, x + 1.f, x + 2.f, x + 3.f), _mm_set1_ps((float)y) });
+                int imask = _mm_movemask_ps(lerp.mask);
+
+                vs_output input{ lerp.position, lerp.color };
+                vec4 frags = command->PixelShader(command->PixelShader, input);
+
+                uint32_t colors[4];
+                ConvertFragsToColors(frags, colors);
+
+                if ((imask & 0x08) == 0)
+                {
+                    renderTarget[y * rtPitchInPixels + x] = colors[3];
+                }
+                if ((imask & 0x04) == 0)
+                {
+                    renderTarget[y * rtPitchInPixels + x + 1] = colors[2];
+                }
+                if ((imask & 0x02) == 0)
+                {
+                    renderTarget[y * rtPitchInPixels + x + 2] = colors[1];
+                }
+                if ((imask & 0x01) == 0)
+                {
+                    renderTarget[y * rtPitchInPixels + x + 3] = colors[0];
+                }
+            }
+
+            spanx = _mm_add_ps(spanx, step);
         }
 
         iTriangle = SharedData->CurrentTriangle++;
@@ -254,8 +378,6 @@ void TRPipelineThread::ProcessOneTrianglePerThread(const std::shared_ptr<RenderC
 
 void TRPipelineThread::ProcessOneTilePerThread(const std::shared_ptr<RenderCommand>& command)
 {
-    SSEVSOutput* VSOutputs = SharedData->VSOutputs;
-
     if (SharedData->StatsEnabled)
     {
         LARGE_INTEGER time;
@@ -269,21 +391,15 @@ void TRPipelineThread::ProcessOneTilePerThread(const std::shared_ptr<RenderComma
     uint64_t iTriangle = SharedData->CurrentTriangle++;
     while (iTriangle < command->NumTriangles)
     {
-        uint64_t iP1 = iTriangle * 3;
-        uint64_t iP2 = iP1 + 1;
-        uint64_t iP3 = iP2 + 1;
+        float4 tp1, tp2, tp3;
+        float3 tc1, tc2, tc3;
 
-        uint64_t iP1base = iP1 / 4;
-        uint64_t iP1off = iP1 % 4;
-        uint64_t iP2base = iP2 / 4;
-        uint64_t iP2off = iP2 % 4;
-        uint64_t iP3base = iP3 / 4;
-        uint64_t iP3off = iP3 % 4;
+        GetTriangleVerts(iTriangle, &tp1, &tp2, &tp3, &tc1, &tc2, &tc3);
 
         triangle.iTriangle = iTriangle;
-        triangle.p1 = float2(VSOutputs[iP1base].Position_x[iP1off], VSOutputs[iP1base].Position_y[iP1off]);
-        triangle.p2 = float2(VSOutputs[iP2base].Position_x[iP2off], VSOutputs[iP2base].Position_y[iP2off]);
-        triangle.p3 = float2(VSOutputs[iP3base].Position_x[iP3off], VSOutputs[iP3base].Position_y[iP3off]);
+        triangle.p1 = float2(tp1.x, tp1.y);
+        triangle.p2 = float2(tp2.x, tp2.y);
+        triangle.p3 = float2(tp3.x, tp3.y);
 
         // edge equation Bx + Cy = 0, where B & C are computed from slope as B = (y1 - y0) and C = -(x1 - x0) or (x0 - x1).
         triangle.e1 = float2(triangle.p2.y - triangle.p1.y, triangle.p1.x - triangle.p2.x);
@@ -640,47 +756,44 @@ void TRPipelineThread::sseProcessBlock(
         }
         else
         {
+            float4 tp1, tp2, tp3;
+            float3 tc1, tc2, tc3;
+
+            GetTriangleVerts(triangle.iTriangle, &tp1, &tp2, &tp3, &tc1, &tc2, &tc3);
+
+            vec4 p1 = { _mm_set1_ps(tp1.x), _mm_set1_ps(tp1.y), _mm_set1_ps(tp1.z), _mm_set1_ps(tp1.w) };
+            vec4 p2 = { _mm_set1_ps(tp2.x), _mm_set1_ps(tp2.y), _mm_set1_ps(tp2.z), _mm_set1_ps(tp2.w) };
+            vec4 p3 = { _mm_set1_ps(tp3.x), _mm_set1_ps(tp3.y), _mm_set1_ps(tp3.z), _mm_set1_ps(tp3.w) };
+
+            vec3 c1 = { _mm_set1_ps(tc1.x), _mm_set1_ps(tc1.y), _mm_set1_ps(tc1.z) };
+            vec3 c2 = { _mm_set1_ps(tc2.x), _mm_set1_ps(tc2.y), _mm_set1_ps(tc2.z) };
+            vec3 c3 = { _mm_set1_ps(tc3.x), _mm_set1_ps(tc3.y), _mm_set1_ps(tc3.z) };
+
             // rasterize the pixels!
-            __m128 lerpMask;
-            SSEVSOutput lerped;
-            sseLerp(triangle, base_corner_x, base_corner_y, lerpMask, &lerped);
+            lerp_result lerp = sseLerp(p1, p2, p3, c1, c2, c3, vec2{ base_corner_x, base_corner_y });
+            imask |= _mm_movemask_ps(lerp.mask);
 
-            imask |= _mm_movemask_ps(lerpMask);
+            vs_output input{ lerp.position, lerp.color };
+            vec4 frags = command->PixelShader(command->PixelShader, input);
 
-            SSEPSOutput output;
-            command->PixelShader(command->PSConstantBuffer, lerped, output);
+            uint32_t colors[4];
+            ConvertFragsToColors(frags, colors);
 
             if ((imask & 0x08) == 0)
             {
-                renderTarget[y * rtPitchPixels + top_left_x] = 
-                    0xFF000000 |
-                    (uint32_t)((uint8_t)(output.B[3] * 255.f)) << 16 |
-                    (uint32_t)((uint8_t)(output.G[3] * 255.f)) << 8 |
-                    (uint32_t)((uint8_t)(output.R[3] * 255.f));
+                renderTarget[y * rtPitchPixels + top_left_x] = colors[3];
             }
             if ((imask & 0x04) == 0)
             {
-                renderTarget[y * rtPitchPixels + (top_left_x + size)] = 
-                    0xFF000000 |
-                    (uint32_t)((uint8_t)(output.B[2] * 255.f)) << 16 |
-                    (uint32_t)((uint8_t)(output.G[2] * 255.f)) << 8 |
-                    (uint32_t)((uint8_t)(output.R[2] * 255.f));
+                renderTarget[y * rtPitchPixels + (top_left_x + size)] = colors[2];
             }
             if ((imask & 0x02) == 0)
             {
-                renderTarget[y * rtPitchPixels + (top_left_x + 2 * size)] = 
-                    0xFF000000 |
-                    (uint32_t)((uint8_t)(output.B[1] * 255.f)) << 16 |
-                    (uint32_t)((uint8_t)(output.G[1] * 255.f)) << 8 |
-                    (uint32_t)((uint8_t)(output.R[1] * 255.f));
+                renderTarget[y * rtPitchPixels + (top_left_x + 2 * size)] = colors[1];
             }
             if ((imask & 0x01) == 0)
             {
-                renderTarget[y * rtPitchPixels + (top_left_x + 3 * size)] = 
-                    0xFF000000 |
-                    (uint32_t)((uint8_t)(output.B[0] * 255.f)) << 16 |
-                    (uint32_t)((uint8_t)(output.G[0] * 255.f)) << 8 |
-                    (uint32_t)((uint8_t)(output.R[0] * 255.f));
+                renderTarget[y * rtPitchPixels + (top_left_x + 3 * size)] = colors[0];
             }
         }
     }
@@ -692,22 +805,20 @@ void TRPipelineThread::sseProcessBlock(
 //     p (px, py) is the point to compute barycentric coordinates for
 // out: wA, wB, wC are the weights at vertices a, b, and c
 //      mask will contain a 0 (clear) if the value is computed. It will be 0xFFFFFFFF (set) if invalid
-void TRPipelineThread::sseBary2D(
-    const __m128& ax, const __m128& ay, const __m128& bx, const __m128& by, const __m128& cx, const __m128& cy,
-    const __m128& px, const __m128& py, __m128& xA, __m128& xB, __m128& xC, __m128& mask)
+bary_result TRPipelineThread::sseBary2D(const vec2 a, const vec2 b, const vec2 c, const vec2 p)
 {
-    __m128 abx = _mm_sub_ps(bx, ax);
-    __m128 aby = _mm_sub_ps(by, ay);
-    __m128 acx = _mm_sub_ps(cx, ax);
-    __m128 acy = _mm_sub_ps(cy, ay);
+    __m128 abx = _mm_sub_ps(b.x, a.x);
+    __m128 aby = _mm_sub_ps(b.y, a.y);
+    __m128 acx = _mm_sub_ps(c.x, a.x);
+    __m128 acy = _mm_sub_ps(c.y, a.y);
 
     // Find barycentric coordinates of P (wA, wB, wC)
-    __m128 bcx = _mm_sub_ps(cx, bx);
-    __m128 bcy = _mm_sub_ps(cy, by);
-    __m128 apx = _mm_sub_ps(px, ax);
-    __m128 apy = _mm_sub_ps(py, ay);
-    __m128 bpx = _mm_sub_ps(px, bx);
-    __m128 bpy = _mm_sub_ps(py, by);
+    __m128 bcx = _mm_sub_ps(c.x, b.x);
+    __m128 bcy = _mm_sub_ps(c.y, b.y);
+    __m128 apx = _mm_sub_ps(p.x, a.x);
+    __m128 apy = _mm_sub_ps(p.y, a.y);
+    __m128 bpx = _mm_sub_ps(p.x, b.x);
+    __m128 bpy = _mm_sub_ps(p.y, b.y);
 
     // float3 wC = cross(ab, ap);
     // expand out to:
@@ -730,7 +841,8 @@ void TRPipelineThread::sseBary2D(
     __m128 wA = _mm_sub_ps(_mm_mul_ps(bcx, bpy), _mm_mul_ps(bpx, bcy));
     __m128 mask3 = _mm_cmplt_ps(wA, _mm_setzero_ps());
 
-    mask = _mm_or_ps(mask1, _mm_or_ps(mask2, mask3));
+    bary_result result;
+    result.mask = _mm_or_ps(mask1, _mm_or_ps(mask2, mask3));
 
     // Use a similar reduction for cross of ab x ac (to find unnormalized normal)
     __m128 norm = _mm_sub_ps(_mm_mul_ps(abx, acy), _mm_mul_ps(acx, aby));
@@ -742,28 +854,55 @@ void TRPipelineThread::sseBary2D(
     // the weights, since they are all single channel vectors, the one channel is exactly
     // the length.
 
-    xA = _mm_mul_ps(wA, norm);
-    xB = _mm_mul_ps(wB, norm);
-    xC = _mm_mul_ps(wC, norm);
+    result.xA = _mm_mul_ps(wA, norm);
+    result.xB = _mm_mul_ps(wB, norm);
+    result.xC = _mm_mul_ps(wC, norm);
+
+    return result;
 }
 
-void TRPipelineThread::sseLerp(
-    const Triangle& triangle,
-    const __m128& px, const __m128& py, __m128& mask,
-    SSEVSOutput* outputs)
+TRPipelineThread::lerp_result TRPipelineThread::sseLerp(
+    const vec4 p1, const vec4 p2, const vec4 p3,
+    const vec3 c1, const vec3 c2, const vec3 c3,
+    const vec2 p)
 {
-    __m128 ax = _mm_set1_ps(triangle.p1.x);
-    __m128 ay = _mm_set1_ps(triangle.p1.y);
-    __m128 bx = _mm_set1_ps(triangle.p2.x);
-    __m128 by = _mm_set1_ps(triangle.p2.y);
-    __m128 cx = _mm_set1_ps(triangle.p3.x);
-    __m128 cy = _mm_set1_ps(triangle.p3.y);
+    bary_result bary = sseBary2D(vec2{ p1.x, p1.y }, vec2{ p2.x, p2.y }, vec2{ p3.x, p3.y }, p);
 
-    __m128 xA, xB, xC;
-    sseBary2D(ax, ay, bx, by, cx, cy, px, py, xA, xB, xC, mask);
+    lerp_result result;
+    result.mask = bary.mask;
 
     // Interpolate all the attributes for these 4 pixels
-    uint64_t iP1 = triangle.iTriangle * 3;
+    result.position.x = _mm_add_ps(_mm_mul_ps(p1.x, bary.xA), _mm_add_ps(_mm_mul_ps(p2.x, bary.xB), _mm_mul_ps(p3.x, bary.xC)));
+    result.position.y = _mm_add_ps(_mm_mul_ps(p1.y, bary.xA), _mm_add_ps(_mm_mul_ps(p2.y, bary.xB), _mm_mul_ps(p3.y, bary.xC)));
+    result.position.z = _mm_add_ps(_mm_mul_ps(p1.z, bary.xA), _mm_add_ps(_mm_mul_ps(p2.z, bary.xB), _mm_mul_ps(p3.z, bary.xC)));
+    result.position.w = _mm_set1_ps(1.f);
+
+    result.color.x = _mm_add_ps(_mm_mul_ps(c1.x, bary.xA), _mm_add_ps(_mm_mul_ps(c2.x, bary.xB), _mm_mul_ps(c3.x, bary.xC)));
+    result.color.y = _mm_add_ps(_mm_mul_ps(c1.y, bary.xA), _mm_add_ps(_mm_mul_ps(c2.y, bary.xB), _mm_mul_ps(c3.y, bary.xC)));
+    result.color.z = _mm_add_ps(_mm_mul_ps(c1.z, bary.xA), _mm_add_ps(_mm_mul_ps(c2.z, bary.xB), _mm_mul_ps(c3.z, bary.xC)));
+
+    return result;
+}
+
+static void test_process_vertex_stream(const SSEVertexBlock* input, SSEVSOutput* output, int count)
+{
+    const SSEVertexBlock* v = input;
+
+    for (int i = 0; i < count; ++i)
+    {
+        vec3 position = { _mm_load_ps(v->Position_x), _mm_load_ps(v->Position_y), _mm_load_ps(v->Position_z) };
+        vec3 color = { _mm_load_ps(v->Color_x), _mm_load_ps(v->Color_y), _mm_load_ps(v->Color_z) };
+
+        _mm_store_ps(output->Position_x, position.x);
+        _mm_store_ps(output->Position_y, position.y);
+        _mm_store_ps(output->Position_z, position.z);
+        _mm_store_ps(output->Position_w, _mm_set1_ps(1.f));
+    }
+}
+
+void TRPipelineThread::GetTriangleVerts(uint64_t iTriangle, float4* p1, float4* p2, float4* p3, float3* c1, float3* c2, float3* c3)
+{
+    uint64_t iP1 = iTriangle * 3;
     uint64_t iP2 = iP1 + 1;
     uint64_t iP3 = iP2 + 1;
 
@@ -774,25 +913,35 @@ void TRPipelineThread::sseLerp(
     uint64_t iP3base = iP3 / 4;
     uint64_t iP3off = iP3 % 4;
 
-    __m128 posx = _mm_add_ps(_mm_mul_ps(ax, xA), _mm_add_ps(_mm_mul_ps(bx, xB), _mm_mul_ps(cx, xC)));
-    __m128 posy = _mm_add_ps(_mm_mul_ps(ay, xA), _mm_add_ps(_mm_mul_ps(by, xB), _mm_mul_ps(cy, xC)));
-    __m128 posz = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(SharedData->VSOutputs[iP1base].Position_z[iP1off]), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(SharedData->VSOutputs[iP2base].Position_z[iP2off]), xB), _mm_mul_ps(_mm_set1_ps(SharedData->VSOutputs[iP3base].Position_z[iP3off]), xC)));
-    __m128 posw = _mm_set1_ps(1.f);
+    SSEVSOutput* v = SharedData->VSOutputs;
 
-    float3 c1(SharedData->VSOutputs[iP1base].Color_x[iP1off], SharedData->VSOutputs[iP1base].Color_y[iP1off], SharedData->VSOutputs[iP1base].Color_z[iP1off]);
-    float3 c2(SharedData->VSOutputs[iP2base].Color_x[iP2off], SharedData->VSOutputs[iP2base].Color_y[iP2off], SharedData->VSOutputs[iP2base].Color_z[iP2off]);
-    float3 c3(SharedData->VSOutputs[iP3base].Color_x[iP3off], SharedData->VSOutputs[iP3base].Color_y[iP3off], SharedData->VSOutputs[iP3base].Color_z[iP3off]);
+    *p1 = float4(v[iP1base].Position_x[iP1off], v[iP1base].Position_y[iP1off], v[iP1base].Position_z[iP1off], v[iP1base].Position_w[iP1off]);
+    *p2 = float4(v[iP2base].Position_x[iP2off], v[iP2base].Position_y[iP2off], v[iP2base].Position_z[iP2off], v[iP2base].Position_w[iP2off]);
+    *p3 = float4(v[iP3base].Position_x[iP3off], v[iP3base].Position_y[iP3off], v[iP3base].Position_z[iP3off], v[iP3base].Position_w[iP3off]);
 
-    __m128 colx = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(c1.x), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(c2.x), xB), _mm_mul_ps(_mm_set1_ps(c3.x), xC)));
-    __m128 coly = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(c1.y), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(c2.y), xB), _mm_mul_ps(_mm_set1_ps(c3.y), xC)));
-    __m128 colz = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(c1.z), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(c2.z), xB), _mm_mul_ps(_mm_set1_ps(c3.z), xC)));
-
-    _mm_store_ps(outputs->Position_x, posx);
-    _mm_store_ps(outputs->Position_y, posy);
-    _mm_store_ps(outputs->Position_z, posz);
-    _mm_store_ps(outputs->Position_w, posw);
-    _mm_store_ps(outputs->Color_x, colx);
-    _mm_store_ps(outputs->Color_y, coly);
-    _mm_store_ps(outputs->Color_z, colz);
+    *c1 = float3(v[iP1base].Color_x[iP1off], v[iP1base].Color_y[iP1off], v[iP1base].Color_z[iP1off]);
+    *c2 = float3(v[iP2base].Color_x[iP2off], v[iP2base].Color_y[iP2off], v[iP2base].Color_z[iP2off]);
+    *c3 = float3(v[iP3base].Color_x[iP3off], v[iP3base].Color_y[iP3off], v[iP3base].Color_z[iP3off]);
 }
 
+void TRPipelineThread::ConvertFragsToColors(const vec4 frags, uint32_t colors[4])
+{
+    __m128 x = _mm_mul_ps(frags.x, _mm_set1_ps(255.f));
+    __m128 y = _mm_mul_ps(frags.y, _mm_set1_ps(255.f));
+    __m128 z = _mm_mul_ps(frags.z, _mm_set1_ps(255.f));
+    __m128 w = _mm_mul_ps(frags.w, _mm_set1_ps(255.f));
+
+    __m128i r = _mm_cvtps_epi32(x);
+    r = _mm_max_epi32(_mm_min_epi32(r, _mm_set1_epi32(255)), _mm_setzero_si128());
+    __m128i g = _mm_cvtps_epi32(y);
+    g = _mm_max_epi32(_mm_min_epi32(g, _mm_set1_epi32(255)), _mm_setzero_si128());
+    __m128i b = _mm_cvtps_epi32(z);
+    b = _mm_max_epi32(_mm_min_epi32(b, _mm_set1_epi32(255)), _mm_setzero_si128());
+    __m128i a = _mm_cvtps_epi32(w);
+    a = _mm_max_epi32(_mm_min_epi32(a, _mm_set1_epi32(255)), _mm_setzero_si128());
+
+    for (int i = 0; i < 4; ++i)
+    {
+        colors[i] = a.m128i_u32[i] << 24 | b.m128i_u32[i] << 16 | g.m128i_u32[i] << 8 | r.m128i_u32[i];
+    }
+}

@@ -74,7 +74,7 @@ bool TRPipeline::Initialize()
     // moment, we are purely CPU bound on the worker threads. So, a decent number
     // to pick here is 1 or 2 less than the total # of logical CPUs.
     // NOTE: It may also be useful to look into using Windows UMS to micro-manage the threads.
-    SharedData.NumThreads = std::max(GetNumLogicalCores() - 2, 1);
+    SharedData.NumThreads = std::max(GetNumLogicalCores() - 1, 1);
 
     SharedData.ShutdownEvent = ShutdownEvent.Get();
 

@@ -59,7 +59,7 @@ struct SharedPipelineData
     uint64_t* TriangleStartTime = nullptr;
     uint64_t* TriangleStopTime = nullptr;
 
-    RastStrategy CurrentRastStrategy = RastStrategy::OneTilePerThread;
+    RastStrategy CurrentRastStrategy = RastStrategy::OneTrianglePerThread;
 
     static const int TileSize = 64;
     int NumHorizBins = 0;

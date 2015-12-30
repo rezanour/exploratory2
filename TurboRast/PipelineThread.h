@@ -45,14 +45,23 @@ private:
         int top_left_x, int top_left_y, int tileSize,
         uint32_t* renderTarget, int rtWidth, int rtHeight, int rtPitchPixels);
 
-    void sseBary2D(
-        const __m128& ax, const __m128& ay, const __m128& bx, const __m128& by, const __m128& cx, const __m128& cy,
-        const __m128& px, const __m128& py, __m128& xA, __m128& xB, __m128& xC, __m128& mask);
+    bary_result __vectorcall sseBary2D(const vec2 a, const vec2 b, const vec2 c, const vec2 p);
 
-    void sseLerp(
-        const Triangle& triangle,
-        const __m128& px, const __m128& py, __m128& mask,
-        SSEVSOutput* output);
+    struct alignas(16) lerp_result
+    {
+        __m128 mask;
+        vec4 position;
+        vec3 color;
+    };
+
+    lerp_result __vectorcall sseLerp(
+        const vec4 p1, const vec4 p2, const vec4 p3,
+        const vec3 c1, const vec3 c2, const vec3 c3,
+        const vec2 p);
+
+    void GetTriangleVerts(uint64_t iTriangle, float4* p1, float4* p2, float4* p3, float3* c1, float3* c2, float3* c3);
+
+    void __vectorcall ConvertFragsToColors(const vec4 frags, uint32_t colors[4]);
 
 private:
     int ID;

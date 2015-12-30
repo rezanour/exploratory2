@@ -11,8 +11,8 @@
 #include <atomic>
 #include <memory>
 #include <vector>
-#include <queue>
-#include <mutex>
+#include <deque>
+#include <algorithm>
 
 typedef Microsoft::WRL::Wrappers::HandleT<Microsoft::WRL::Wrappers::HandleTraits::HANDLENullTraits> Thread;
 

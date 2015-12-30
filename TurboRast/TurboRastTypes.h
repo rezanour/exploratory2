@@ -72,8 +72,53 @@ struct alignas(16) SSEPSOutput
     float A[4];
 };
 
+// 4 float2's packed together
+struct alignas(16) vec2
+{
+    __m128 x;
+    __m128 y;
+};
+
+// 4 float3's packed together
+struct alignas(16) vec3
+{
+    __m128 x;
+    __m128 y;
+    __m128 z;
+};
+
+// 4 float4's packed together
+struct alignas(16) vec4
+{
+    __m128 x;
+    __m128 y;
+    __m128 z;
+    __m128 w;
+};
+
+// 4 barycentric coord results
+struct alignas(16) bary_result
+{
+    __m128 xA;
+    __m128 xB;
+    __m128 xC;
+    __m128 mask;
+};
+
+struct alignas(16) vs_input
+{
+    vec3 Position;
+    vec3 Color;
+};
+
+struct alignas(16) vs_output
+{
+    vec4 Position;
+    vec3 Color;
+};
+
 // Process 4 vertices at a time
-typedef void(__vectorcall * pfnSSEVertexShader)(const void* const constantBuffer, const SSEVertexBlock& input, SSEVSOutput& output);
+typedef vs_output (__vectorcall * pfnSSEVertexShader)(const void* const constantBuffer, const vs_input input);
 
 // Process 4 pixels at a time
-typedef void(__vectorcall * pfnSSEPixelShader)(const void* const constantBuffer, const SSEVSOutput& input, SSEPSOutput& output);
+typedef vec4 (__vectorcall * pfnSSEPixelShader)(const void* const constantBuffer, const vs_output input);
