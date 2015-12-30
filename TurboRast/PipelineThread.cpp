@@ -235,11 +235,9 @@ void TRPipelineThread::ProcessOneTrianglePerThread(const std::shared_ptr<RenderC
         {
             for (int x = 0; x < rtWidth; x += SharedData->TileSize)
             {
-                sseProcessBlock(
-                    triangle,
+                sseProcessBlock(command, triangle,
                     x, y, SharedData->TileSize,
-                    renderTarget, rtWidth, rtHeight, rtPitchInPixels,
-                    SharedData->VSOutputs);
+                    renderTarget, rtWidth, rtHeight, rtPitchInPixels);
             }
         }
 
@@ -363,11 +361,9 @@ void TRPipelineThread::ProcessOneTilePerThread(const std::shared_ptr<RenderComma
 
         for (iTriangle = 0; iTriangle < bin.CurrentTriangle; ++iTriangle)
         {
-            sseProcessBlock(
-                bin.Triangles[iTriangle],
+            sseProcessBlock(command, bin.Triangles[iTriangle],
                 x, y, SharedData->TileSize,
-                renderTarget, rtWidth, rtHeight, rtPitchInPixels,
-                VSOutputs);
+                renderTarget, rtWidth, rtHeight, rtPitchInPixels);
         }
         iBin = SharedData->CurrentBin++;
     }
@@ -528,10 +524,10 @@ void TRPipelineThread::ProcessAndLogStats()
 
 
 void TRPipelineThread::sseProcessBlock(
+    const std::shared_ptr<RenderCommand>& command,
     const Triangle& triangle,
     int top_left_x, int top_left_y, int tileSize,
-    uint32_t* renderTarget, int rtWidth, int rtHeight, int rtPitchPixels,
-    SSEVSOutput* VSOutputs)
+    uint32_t* renderTarget, int rtWidth, int rtHeight, int rtPitchPixels)
     
 {
     const int size = tileSize >> 2;
@@ -619,77 +615,72 @@ void TRPipelineThread::sseProcessBlock(
             // recurse sub tiles
             if ((imask & 0x08) == 0)
             {
-                sseProcessBlock(
-                    triangle,
+                sseProcessBlock(command, triangle,
                     top_left_x, y, size,
-                    renderTarget, rtWidth, rtHeight, rtPitchPixels,
-                    VSOutputs);
+                    renderTarget, rtWidth, rtHeight, rtPitchPixels);
             }
             if ((imask & 0x04) == 0)
             {
-                sseProcessBlock(
-                    triangle,
+                sseProcessBlock(command, triangle,
                     top_left_x + size, y, size,
-                    renderTarget, rtWidth, rtHeight, rtPitchPixels,
-                    VSOutputs);
+                    renderTarget, rtWidth, rtHeight, rtPitchPixels);
             }
             if ((imask & 0x02) == 0)
             {
-                sseProcessBlock(
-                    triangle,
+                sseProcessBlock(command, triangle,
                     top_left_x + 2 * size, y, size,
-                    renderTarget, rtWidth, rtHeight, rtPitchPixels,
-                    VSOutputs);
+                    renderTarget, rtWidth, rtHeight, rtPitchPixels);
             }
             if ((imask & 0x01) == 0)
             {
-                sseProcessBlock(
-                    triangle,
+                sseProcessBlock(command, triangle,
                     top_left_x + 3 * size, y, size,
-                    renderTarget, rtWidth, rtHeight, rtPitchPixels,
-                    VSOutputs);
+                    renderTarget, rtWidth, rtHeight, rtPitchPixels);
             }
         }
         else
         {
             // rasterize the pixels!
             __m128 lerpMask;
-            SSEVSOutput output;
-            sseLerp(triangle, base_corner_x, base_corner_y, lerpMask, VSOutputs, &output);
+            SSEVSOutput lerped;
+            sseLerp(triangle, base_corner_x, base_corner_y, lerpMask, &lerped);
 
             imask |= _mm_movemask_ps(lerpMask);
+
+            SSEPSOutput output;
+            command->PixelShader(command->PSConstantBuffer, lerped, output);
 
             if ((imask & 0x08) == 0)
             {
                 renderTarget[y * rtPitchPixels + top_left_x] = 
                     0xFF000000 |
-                    (uint32_t)((uint8_t)(output.Color_z[3] * 255.f)) << 16 |
-                    (uint32_t)((uint8_t)(output.Color_y[3] * 255.f)) << 8 |
-                    (uint32_t)((uint8_t)(output.Color_x[3] * 255.f));
+                    (uint32_t)((uint8_t)(output.B[3] * 255.f)) << 16 |
+                    (uint32_t)((uint8_t)(output.G[3] * 255.f)) << 8 |
+                    (uint32_t)((uint8_t)(output.R[3] * 255.f));
             }
             if ((imask & 0x04) == 0)
             {
                 renderTarget[y * rtPitchPixels + (top_left_x + size)] = 
                     0xFF000000 |
-                    (uint32_t)((uint8_t)(output.Color_z[2] * 255.f)) << 16 |
-                    (uint32_t)((uint8_t)(output.Color_y[2] * 255.f)) << 8 |
-                    (uint32_t)((uint8_t)(output.Color_x[2] * 255.f));
+                    (uint32_t)((uint8_t)(output.B[2] * 255.f)) << 16 |
+                    (uint32_t)((uint8_t)(output.G[2] * 255.f)) << 8 |
+                    (uint32_t)((uint8_t)(output.R[2] * 255.f));
             }
             if ((imask & 0x02) == 0)
             {
                 renderTarget[y * rtPitchPixels + (top_left_x + 2 * size)] = 
                     0xFF000000 |
-                    (uint32_t)((uint8_t)(output.Color_z[1] * 255.f)) << 16 |
-                    (uint32_t)((uint8_t)(output.Color_y[1] * 255.f)) << 8 |
-                    (uint32_t)((uint8_t)(output.Color_x[1] * 255.f));
+                    (uint32_t)((uint8_t)(output.B[1] * 255.f)) << 16 |
+                    (uint32_t)((uint8_t)(output.G[1] * 255.f)) << 8 |
+                    (uint32_t)((uint8_t)(output.R[1] * 255.f));
             }
             if ((imask & 0x01) == 0)
             {
                 renderTarget[y * rtPitchPixels + (top_left_x + 3 * size)] = 
                     0xFF000000 |
-                    (uint32_t)((uint8_t)(output.Color_z[0] * 255.f)) << 16 |
-                    (uint32_t)((uint8_t)(output.Color_y[0] * 255.f)) << 8 |
-                    (uint32_t)((uint8_t)(output.Color_x[0] * 255.f));
+                    (uint32_t)((uint8_t)(output.B[0] * 255.f)) << 16 |
+                    (uint32_t)((uint8_t)(output.G[0] * 255.f)) << 8 |
+                    (uint32_t)((uint8_t)(output.R[0] * 255.f));
             }
         }
     }
@@ -759,7 +750,7 @@ void TRPipelineThread::sseBary2D(
 void TRPipelineThread::sseLerp(
     const Triangle& triangle,
     const __m128& px, const __m128& py, __m128& mask,
-    SSEVSOutput* VSOutputStream, SSEVSOutput* outputs)
+    SSEVSOutput* outputs)
 {
     __m128 ax = _mm_set1_ps(triangle.p1.x);
     __m128 ay = _mm_set1_ps(triangle.p1.y);
@@ -785,12 +776,12 @@ void TRPipelineThread::sseLerp(
 
     __m128 posx = _mm_add_ps(_mm_mul_ps(ax, xA), _mm_add_ps(_mm_mul_ps(bx, xB), _mm_mul_ps(cx, xC)));
     __m128 posy = _mm_add_ps(_mm_mul_ps(ay, xA), _mm_add_ps(_mm_mul_ps(by, xB), _mm_mul_ps(cy, xC)));
-    __m128 posz = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(VSOutputStream[iP1base].Position_z[iP1off]), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(VSOutputStream[iP2base].Position_z[iP2off]), xB), _mm_mul_ps(_mm_set1_ps(VSOutputStream[iP3base].Position_z[iP3off]), xC)));
+    __m128 posz = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(SharedData->VSOutputs[iP1base].Position_z[iP1off]), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(SharedData->VSOutputs[iP2base].Position_z[iP2off]), xB), _mm_mul_ps(_mm_set1_ps(SharedData->VSOutputs[iP3base].Position_z[iP3off]), xC)));
     __m128 posw = _mm_set1_ps(1.f);
 
-    float3 c1(VSOutputStream[iP1base].Color_x[iP1off], VSOutputStream[iP1base].Color_y[iP1off], VSOutputStream[iP1base].Color_z[iP1off]);
-    float3 c2(VSOutputStream[iP2base].Color_x[iP2off], VSOutputStream[iP2base].Color_y[iP2off], VSOutputStream[iP2base].Color_z[iP2off]);
-    float3 c3(VSOutputStream[iP3base].Color_x[iP3off], VSOutputStream[iP3base].Color_y[iP3off], VSOutputStream[iP3base].Color_z[iP3off]);
+    float3 c1(SharedData->VSOutputs[iP1base].Color_x[iP1off], SharedData->VSOutputs[iP1base].Color_y[iP1off], SharedData->VSOutputs[iP1base].Color_z[iP1off]);
+    float3 c2(SharedData->VSOutputs[iP2base].Color_x[iP2off], SharedData->VSOutputs[iP2base].Color_y[iP2off], SharedData->VSOutputs[iP2base].Color_z[iP2off]);
+    float3 c3(SharedData->VSOutputs[iP3base].Color_x[iP3off], SharedData->VSOutputs[iP3base].Color_y[iP3off], SharedData->VSOutputs[iP3base].Color_z[iP3off]);
 
     __m128 colx = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(c1.x), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(c2.x), xB), _mm_mul_ps(_mm_set1_ps(c3.x), xC)));
     __m128 coly = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(c1.y), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(c2.y), xB), _mm_mul_ps(_mm_set1_ps(c3.y), xC)));

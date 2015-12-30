@@ -451,6 +451,11 @@ void __vectorcall SimpleVertexShader(const void* const constants, const SSEVerte
 void __vectorcall SimplePixelShader(const void* const constants, const SSEVSOutput& input, SSEPSOutput& output)
 {
     UNREFERENCED_PARAMETER(constants);
-    UNREFERENCED_PARAMETER(input);
-    UNREFERENCED_PARAMETER(output);
+    for (int i = 0; i < 4; ++i)
+    {
+        output.R[i] = input.Color_x[i];
+        output.G[i] = input.Color_y[i];
+        output.B[i] = input.Color_z[i];
+        output.A[i] = 1.f;
+    }
 }
