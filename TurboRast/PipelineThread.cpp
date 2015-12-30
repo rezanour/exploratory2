@@ -238,7 +238,8 @@ void TRPipelineThread::ProcessOneTrianglePerThread(const std::shared_ptr<RenderC
                 sseProcessBlock(
                     triangle,
                     x, y, SharedData->TileSize,
-                    renderTarget, rtWidth, rtHeight, rtPitchInPixels);
+                    renderTarget, rtWidth, rtHeight, rtPitchInPixels,
+                    SharedData->VSOutputs);
             }
         }
 
@@ -365,7 +366,8 @@ void TRPipelineThread::ProcessOneTilePerThread(const std::shared_ptr<RenderComma
             sseProcessBlock(
                 bin.Triangles[iTriangle],
                 x, y, SharedData->TileSize,
-                renderTarget, rtWidth, rtHeight, rtPitchInPixels);
+                renderTarget, rtWidth, rtHeight, rtPitchInPixels,
+                VSOutputs);
         }
         iBin = SharedData->CurrentBin++;
     }
@@ -528,7 +530,8 @@ void TRPipelineThread::ProcessAndLogStats()
 void TRPipelineThread::sseProcessBlock(
     const Triangle& triangle,
     int top_left_x, int top_left_y, int tileSize,
-    uint32_t* renderTarget, int rtWidth, int rtHeight, int rtPitchPixels)
+    uint32_t* renderTarget, int rtWidth, int rtHeight, int rtPitchPixels,
+    SSEVSOutput* VSOutputs)
     
 {
     const int size = tileSize >> 2;
@@ -619,49 +622,186 @@ void TRPipelineThread::sseProcessBlock(
                 sseProcessBlock(
                     triangle,
                     top_left_x, y, size,
-                    renderTarget, rtWidth, rtHeight, rtPitchPixels);
+                    renderTarget, rtWidth, rtHeight, rtPitchPixels,
+                    VSOutputs);
             }
             if ((imask & 0x04) == 0)
             {
                 sseProcessBlock(
                     triangle,
                     top_left_x + size, y, size,
-                    renderTarget, rtWidth, rtHeight, rtPitchPixels);
+                    renderTarget, rtWidth, rtHeight, rtPitchPixels,
+                    VSOutputs);
             }
             if ((imask & 0x02) == 0)
             {
                 sseProcessBlock(
                     triangle,
                     top_left_x + 2 * size, y, size,
-                    renderTarget, rtWidth, rtHeight, rtPitchPixels);
+                    renderTarget, rtWidth, rtHeight, rtPitchPixels,
+                    VSOutputs);
             }
             if ((imask & 0x01) == 0)
             {
                 sseProcessBlock(
                     triangle,
                     top_left_x + 3 * size, y, size,
-                    renderTarget, rtWidth, rtHeight, rtPitchPixels);
+                    renderTarget, rtWidth, rtHeight, rtPitchPixels,
+                    VSOutputs);
             }
         }
         else
         {
             // rasterize the pixels!
+            __m128 lerpMask;
+            SSEVSOutput output;
+            sseLerp(triangle, base_corner_x, base_corner_y, lerpMask, VSOutputs, &output);
+
+            imask |= _mm_movemask_ps(lerpMask);
+
             if ((imask & 0x08) == 0)
             {
-                renderTarget[y * rtPitchPixels + top_left_x] = 0xFFFF0000;
+                renderTarget[y * rtPitchPixels + top_left_x] = 
+                    0xFF000000 |
+                    (uint32_t)((uint8_t)(output.Color_z[3] * 255.f)) << 16 |
+                    (uint32_t)((uint8_t)(output.Color_y[3] * 255.f)) << 8 |
+                    (uint32_t)((uint8_t)(output.Color_x[3] * 255.f));
             }
             if ((imask & 0x04) == 0)
             {
-                renderTarget[y * rtPitchPixels + (top_left_x + size)] = 0xFFFF0000;
+                renderTarget[y * rtPitchPixels + (top_left_x + size)] = 
+                    0xFF000000 |
+                    (uint32_t)((uint8_t)(output.Color_z[2] * 255.f)) << 16 |
+                    (uint32_t)((uint8_t)(output.Color_y[2] * 255.f)) << 8 |
+                    (uint32_t)((uint8_t)(output.Color_x[2] * 255.f));
             }
             if ((imask & 0x02) == 0)
             {
-                renderTarget[y * rtPitchPixels + (top_left_x + 2 * size)] = 0xFFFF0000;
+                renderTarget[y * rtPitchPixels + (top_left_x + 2 * size)] = 
+                    0xFF000000 |
+                    (uint32_t)((uint8_t)(output.Color_z[1] * 255.f)) << 16 |
+                    (uint32_t)((uint8_t)(output.Color_y[1] * 255.f)) << 8 |
+                    (uint32_t)((uint8_t)(output.Color_x[1] * 255.f));
             }
             if ((imask & 0x01) == 0)
             {
-                renderTarget[y * rtPitchPixels + (top_left_x + 3 * size)] = 0xFFFF0000;
+                renderTarget[y * rtPitchPixels + (top_left_x + 3 * size)] = 
+                    0xFF000000 |
+                    (uint32_t)((uint8_t)(output.Color_z[0] * 255.f)) << 16 |
+                    (uint32_t)((uint8_t)(output.Color_y[0] * 255.f)) << 8 |
+                    (uint32_t)((uint8_t)(output.Color_x[0] * 255.f));
             }
         }
     }
 }
+
+// Compute barycentric coordinates (lerp weights) for 4 samples at once.
+// The computation is done in 2 dimensions (screen space).
+// in: a (ax, ay), b (bx, by) and c (cx, cy) are the 3 vertices of the triangle.
+//     p (px, py) is the point to compute barycentric coordinates for
+// out: wA, wB, wC are the weights at vertices a, b, and c
+//      mask will contain a 0 (clear) if the value is computed. It will be 0xFFFFFFFF (set) if invalid
+void TRPipelineThread::sseBary2D(
+    const __m128& ax, const __m128& ay, const __m128& bx, const __m128& by, const __m128& cx, const __m128& cy,
+    const __m128& px, const __m128& py, __m128& xA, __m128& xB, __m128& xC, __m128& mask)
+{
+    __m128 abx = _mm_sub_ps(bx, ax);
+    __m128 aby = _mm_sub_ps(by, ay);
+    __m128 acx = _mm_sub_ps(cx, ax);
+    __m128 acy = _mm_sub_ps(cy, ay);
+
+    // Find barycentric coordinates of P (wA, wB, wC)
+    __m128 bcx = _mm_sub_ps(cx, bx);
+    __m128 bcy = _mm_sub_ps(cy, by);
+    __m128 apx = _mm_sub_ps(px, ax);
+    __m128 apy = _mm_sub_ps(py, ay);
+    __m128 bpx = _mm_sub_ps(px, bx);
+    __m128 bpy = _mm_sub_ps(py, by);
+
+    // float3 wC = cross(ab, ap);
+    // expand out to:
+    //    wC.x = ab.y * ap.z - ap.y * ab.z;
+    //    wC.y = ab.z * ap.x - ap.z * ab.x;
+    //    wC.z = ab.x * ap.y - ap.x * ab.y;
+    // since we are doing in screen space, z is always 0 so simplify:
+    //    wC.x = 0
+    //    wC.y = 0
+    //    wC.z = ab.x * ap.y - ap.x * ab.y
+    // or, simply:
+    //    wC = abx * apy - apx * aby;
+    __m128 wC = _mm_sub_ps(_mm_mul_ps(abx, apy), _mm_mul_ps(apx, aby));
+    __m128 mask1 = _mm_cmplt_ps(wC, _mm_setzero_ps());
+
+    // Use same reduction for wB & wA
+    __m128 wB = _mm_sub_ps(_mm_mul_ps(apx, acy), _mm_mul_ps(acx, apy));
+    __m128 mask2 = _mm_cmplt_ps(wB, _mm_setzero_ps());
+
+    __m128 wA = _mm_sub_ps(_mm_mul_ps(bcx, bpy), _mm_mul_ps(bpx, bcy));
+    __m128 mask3 = _mm_cmplt_ps(wA, _mm_setzero_ps());
+
+    mask = _mm_or_ps(mask1, _mm_or_ps(mask2, mask3));
+
+    // Use a similar reduction for cross of ab x ac (to find unnormalized normal)
+    __m128 norm = _mm_sub_ps(_mm_mul_ps(abx, acy), _mm_mul_ps(acx, aby));
+    norm = _mm_rcp_ps(norm);
+
+    // to find length of this cross product, which already know is purely in the z
+    // direction, is just the length of the z component, which is the exactly the single
+    // channel norm we computed above. Similar logic is used for lengths of each of
+    // the weights, since they are all single channel vectors, the one channel is exactly
+    // the length.
+
+    xA = _mm_mul_ps(wA, norm);
+    xB = _mm_mul_ps(wB, norm);
+    xC = _mm_mul_ps(wC, norm);
+}
+
+void TRPipelineThread::sseLerp(
+    const Triangle& triangle,
+    const __m128& px, const __m128& py, __m128& mask,
+    SSEVSOutput* VSOutputStream, SSEVSOutput* outputs)
+{
+    __m128 ax = _mm_set1_ps(triangle.p1.x);
+    __m128 ay = _mm_set1_ps(triangle.p1.y);
+    __m128 bx = _mm_set1_ps(triangle.p2.x);
+    __m128 by = _mm_set1_ps(triangle.p2.y);
+    __m128 cx = _mm_set1_ps(triangle.p3.x);
+    __m128 cy = _mm_set1_ps(triangle.p3.y);
+
+    __m128 xA, xB, xC;
+    sseBary2D(ax, ay, bx, by, cx, cy, px, py, xA, xB, xC, mask);
+
+    // Interpolate all the attributes for these 4 pixels
+    uint64_t iP1 = triangle.iTriangle * 3;
+    uint64_t iP2 = iP1 + 1;
+    uint64_t iP3 = iP2 + 1;
+
+    uint64_t iP1base = iP1 / 4;
+    uint64_t iP1off = iP1 % 4;
+    uint64_t iP2base = iP2 / 4;
+    uint64_t iP2off = iP2 % 4;
+    uint64_t iP3base = iP3 / 4;
+    uint64_t iP3off = iP3 % 4;
+
+    __m128 posx = _mm_add_ps(_mm_mul_ps(ax, xA), _mm_add_ps(_mm_mul_ps(bx, xB), _mm_mul_ps(cx, xC)));
+    __m128 posy = _mm_add_ps(_mm_mul_ps(ay, xA), _mm_add_ps(_mm_mul_ps(by, xB), _mm_mul_ps(cy, xC)));
+    __m128 posz = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(VSOutputStream[iP1base].Position_z[iP1off]), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(VSOutputStream[iP2base].Position_z[iP2off]), xB), _mm_mul_ps(_mm_set1_ps(VSOutputStream[iP3base].Position_z[iP3off]), xC)));
+    __m128 posw = _mm_set1_ps(1.f);
+
+    float3 c1(VSOutputStream[iP1base].Color_x[iP1off], VSOutputStream[iP1base].Color_y[iP1off], VSOutputStream[iP1base].Color_z[iP1off]);
+    float3 c2(VSOutputStream[iP2base].Color_x[iP2off], VSOutputStream[iP2base].Color_y[iP2off], VSOutputStream[iP2base].Color_z[iP2off]);
+    float3 c3(VSOutputStream[iP3base].Color_x[iP3off], VSOutputStream[iP3base].Color_y[iP3off], VSOutputStream[iP3base].Color_z[iP3off]);
+
+    __m128 colx = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(c1.x), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(c2.x), xB), _mm_mul_ps(_mm_set1_ps(c3.x), xC)));
+    __m128 coly = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(c1.y), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(c2.y), xB), _mm_mul_ps(_mm_set1_ps(c3.y), xC)));
+    __m128 colz = _mm_add_ps(_mm_mul_ps(_mm_set1_ps(c1.z), xA), _mm_add_ps(_mm_mul_ps(_mm_set1_ps(c2.z), xB), _mm_mul_ps(_mm_set1_ps(c3.z), xC)));
+
+    _mm_store_ps(outputs->Position_x, posx);
+    _mm_store_ps(outputs->Position_y, posy);
+    _mm_store_ps(outputs->Position_z, posz);
+    _mm_store_ps(outputs->Position_w, posw);
+    _mm_store_ps(outputs->Color_x, colx);
+    _mm_store_ps(outputs->Color_y, coly);
+    _mm_store_ps(outputs->Color_z, colz);
+}
+

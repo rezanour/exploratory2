@@ -42,8 +42,17 @@ private:
     static void sseProcessBlock(
         const Triangle& triangle,
         int top_left_x, int top_left_y, int tileSize,
-        uint32_t* renderTarget, int rtWidth, int rtHeight, int rtPitchPixels);
+        uint32_t* renderTarget, int rtWidth, int rtHeight, int rtPitchPixels,
+        SSEVSOutput* VSOutputs);
 
+    static void sseBary2D(
+        const __m128& ax, const __m128& ay, const __m128& bx, const __m128& by, const __m128& cx, const __m128& cy,
+        const __m128& px, const __m128& py, __m128& xA, __m128& xB, __m128& xC, __m128& mask);
+
+    static void sseLerp(
+        const Triangle& triangle,
+        const __m128& px, const __m128& py, __m128& mask,
+        SSEVSOutput* VSOutputStream, SSEVSOutput* outputs);
 
 private:
     int ID;
