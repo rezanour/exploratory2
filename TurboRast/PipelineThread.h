@@ -2,6 +2,9 @@
 
 struct RenderCommand;
 class TRPipeline;
+enum class RastStrategy;
+struct Triangle;
+struct Bin;
 
 // One (of potentially many) pipeline threads.
 class TRPipelineThread
@@ -23,12 +26,21 @@ private:
     void ThreadProc();
 
     std::shared_ptr<RenderCommand> GetNextCommand();
-    void SyncAndDoSerialWork(uint64_t fenceValue);
+    void ProcessVertices(const std::shared_ptr<RenderCommand>& command);
 
-    static void __vectorcall sseProcessBlock(
-        const float2& p1, const float2& p2, const float2& p3,   // three triangle vertices
-        const float2& e1, const float2& e2, const float2& e3,   // three edge equations
-        const float2& o1, const float2& o2, const float2& o3,   // three rejection corner offsets
+    void ProcessOneTrianglePerThread(const std::shared_ptr<RenderCommand>& command);
+    void ProcessOneTilePerThread(const std::shared_ptr<RenderCommand>& command);
+
+    void JoinAndDoSerialInitialization(const std::shared_ptr<RenderCommand>& command);
+    void JoinAndDoSerialCompletion(const std::shared_ptr<RenderCommand>& command);
+
+    void SerialInitialization(const std::shared_ptr<RenderCommand>& command);
+    void SerialCompletion(const std::shared_ptr<RenderCommand>& command);
+
+    void ProcessAndLogStats();
+
+    static void sseProcessBlock(
+        const Triangle& triangle,
         uint32_t* renderTarget, int rtWidth, int rtHeight, int rtPitchPixels,
         int top_left_x, int top_left_y, int tileSize);          // in pixels
 

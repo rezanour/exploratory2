@@ -2,18 +2,41 @@
 
 class TRPipelineThread;
 
+enum class RastStrategy
+{
+    OneTrianglePerThread = 0,
+    OneTilePerThread,
+    NumStrategies,
+};
+
+// Binning
+struct Triangle
+{
+    float2 p1, p2, p3;
+    float2 e1, e2, e3;
+    float2 o1, o2, o3;
+    uint64_t iTriangle;
+};
+
+struct Bin
+{
+    static const size_t MaxTrianglesPerBin = 128 * 1024; // 128K
+    Triangle Triangles[MaxTrianglesPerBin];
+    std::atomic_uint64_t CurrentTriangle;
+};
+
 // Data shared between pipeline threads
 struct SharedPipelineData
 {
-    int NumThreads;
-    HANDLE ShutdownEvent;
+    int NumThreads = 1;
+    HANDLE ShutdownEvent = nullptr;
 
     // Needs to be reset from a pipeline thread in between each
     // render packet. Requires synch barriers
-    std::atomic_uint64_t CurrentVertex;
-    std::atomic_uint64_t CurrentTriangle;
+    std::atomic_uint64_t CurrentVertex = 0;
+    std::atomic_uint64_t CurrentTriangle = 0;
 
-    SSEVSOutput* VSOutputs;
+    SSEVSOutput* VSOutputs = nullptr;
 
     // synchronization barriers
 
@@ -21,13 +44,32 @@ struct SharedPipelineData
     // When == NumThreads, all threads have passed by barrier. Also, if
     // incrementing it returns NumThreads, that is last thread through barrier.
     // Barrier needs to be reset to 0 when it's safe to do so
-    std::atomic_int32_t JoinBarrier;
+    std::atomic_int32_t JoinBarrier = 0;
 
-    // Starts as 0. Each thread that waits on this tries to compare/exchange it
-    // from 1 to 1, which will fail when it's 0. When owning thread wants to signal it,
-    // it sets it to 1. Needs to be reset to 0 when it's safe to do so
-    std::atomic_bool WaitBarrier1;
-    std::atomic_bool WaitBarrier2;
+    // Starts as false. Each thread waits on this to change to true.
+    // When a thread wants to signal it, they switch it to true, releasing
+    // the other threads. It needs to be reset to false when it is safe to do so.
+    std::atomic_bool InitWaitBarrier = false;
+    std::atomic_bool CompletionWaitBarrier = false;
+
+    // Stats
+    bool StatsEnabled = false;
+    uint64_t* VertexStartTime = nullptr;
+    uint64_t* VertexStopTime = nullptr;
+    uint64_t* TriangleStartTime = nullptr;
+    uint64_t* TriangleStopTime = nullptr;
+
+    RastStrategy CurrentRastStrategy = RastStrategy::OneTilePerThread;
+
+    static const int TileSize = 64;
+    int NumHorizBins = 0;
+    int NumVertBins = 0;
+    int NumTotalBins = 0;
+    std::unique_ptr<Bin[]> Bins;
+    std::atomic_int CurrentBin;
+
+    std::atomic_int32_t BinningJoinBarrier = 0;
+    std::atomic_bool BinningWaitBarrier = false;
 };
 
 // A single render command (ie. a Draw() call)

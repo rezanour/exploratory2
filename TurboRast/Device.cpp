@@ -3,6 +3,7 @@
 #include "Pipeline.h"
 #include "PipelineThread.h"
 #include "VertexBuffer.h"
+#include "Texture2D.h"
 
 TRDevice::TRDevice()
 {
@@ -22,6 +23,12 @@ bool TRDevice::Initialize()
     }
 
     return true;
+}
+
+void TRDevice::ClearRenderTarget(const std::shared_ptr<TRTexture2D>& renderTarget) const
+{
+    uint32_t size = renderTarget->GetPitchInPixels() * renderTarget->GetHeight();
+    memset(renderTarget->GetData(), 0, size * sizeof(uint32_t));
 }
 
 void TRDevice::Draw(uint64_t vertexCount, uint64_t baseVertex)

@@ -22,6 +22,7 @@ public:
     void PSSetShader(pfnSSEPixelShader pixelShader) { PixelShader = pixelShader; }
     void PSSetConstantBuffer(void* constantBuffer) { PSConstantBuffer = constantBuffer; }
     void OMSetRenderTarget(const std::shared_ptr<const TRTexture2D>& renderTarget) { RenderTarget = renderTarget; }
+    void ClearRenderTarget(const std::shared_ptr<TRTexture2D>& renderTarget) const;
 
     void Draw(uint64_t vertexCount, uint64_t baseVertex);
 

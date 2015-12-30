@@ -354,6 +354,8 @@ bool DoFrame()
     {
         RenderTargets[FrameIndex] = std::make_shared<TRTexture2D>(mapped.pData, (int)OutputWidth, (int)OutputHeight, (int)mapped.RowPitch / (int)sizeof(uint32_t));
     }
+
+    TheDevice->ClearRenderTarget(RenderTargets[FrameIndex]);
    
     TheDevice->OMSetRenderTarget(RenderTargets[FrameIndex]);
     TheDevice->Draw(VertBuffer->GetNumVertices(), 0);

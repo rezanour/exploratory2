@@ -26,6 +26,11 @@ TRPipeline::~TRPipeline()
 
     // Don't delete scratch until after all threads are done running
     Scratch.clear();
+
+    delete[] SharedData.VertexStartTime;
+    delete[] SharedData.VertexStopTime;
+    delete[] SharedData.TriangleStartTime;
+    delete[] SharedData.TriangleStopTime;
 }
 
 bool TRPipeline::Initialize()
@@ -38,15 +43,22 @@ bool TRPipeline::Initialize()
     }
 
     // TODO: formalize numThreads determination
+    // Note that going over 4-6 threads starts to actually slow down significantly
+    // due to spin overhead waiting on other threads to catch up at join points.
+    // The threading system needs some additional consideration. Improvements
+    // to the synchronization can certainly be made, but may also want to look into
+    // using Windows UMS (user mode scheduling) to micro-manage the threads.
     SharedData.NumThreads = 4;
     SharedData.ShutdownEvent = ShutdownEvent.Get();
 
-    SharedData.CurrentVertex = 0;
-    SharedData.CurrentTriangle = 0;
-
-    SharedData.JoinBarrier = 0;
-    SharedData.WaitBarrier1 = false;
-    SharedData.WaitBarrier2 = false;
+    SharedData.StatsEnabled = false;
+    if (SharedData.StatsEnabled)
+    {
+        SharedData.VertexStartTime = new uint64_t[SharedData.NumThreads];
+        SharedData.VertexStopTime = new uint64_t[SharedData.NumThreads];
+        SharedData.TriangleStartTime = new uint64_t[SharedData.NumThreads];
+        SharedData.TriangleStopTime = new uint64_t[SharedData.NumThreads];
+    }
 
     // Configure default scratch space for pipeline threads
     Scratch.resize(4 * 1024 * 1024);    // 4 MB
