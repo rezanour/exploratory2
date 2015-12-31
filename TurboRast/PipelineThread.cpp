@@ -6,6 +6,98 @@
 
 using namespace Microsoft::WRL::Wrappers;
 
+// Compute barycentric coordinates (lerp weights) for 4 samples at once.
+// The computation is done in 2 dimensions (screen space).
+// in: a (ax, ay), b (bx, by) and c (cx, cy) are the 3 vertices of the triangle.
+//     p (px, py) is the point to compute barycentric coordinates for
+// out: wA, wB, wC are the weights at vertices a, b, and c
+//      mask will contain a 0 (clear) if the value is computed. It will be 0xFFFFFFFF (set) if invalid
+__forceinline bary_result __vectorcall sseBary2D(
+    const vec4 a, const vec4 b,
+    const vec2 ab, const vec2 bc, const vec2 ac,
+    const vec2 p)
+{
+    // Find barycentric coordinates of P (wA, wB, wC)
+    vec2 ap, bp;
+    ap.x = _mm_sub_ps(p.x, a.x);
+    ap.y = _mm_sub_ps(p.y, a.y);
+    bp.x = _mm_sub_ps(p.x, b.x);
+    bp.y = _mm_sub_ps(p.y, b.y);
+
+    // float3 wC = cross(ab, ap);
+    // expand out to:
+    //    wC.x = ab.y * ap.z - ap.y * ab.z;
+    //    wC.y = ab.z * ap.x - ap.z * ab.x;
+    //    wC.z = ab.x * ap.y - ap.x * ab.y;
+    // since we are doing in screen space, z is always 0 so simplify:
+    //    wC.x = 0
+    //    wC.y = 0
+    //    wC.z = ab.x * ap.y - ap.x * ab.y
+    // or, simply:
+    //    wC = abx * apy - apx * aby;
+    __m128 wC = _mm_sub_ps(_mm_mul_ps(ab.x, ap.y), _mm_mul_ps(ap.x, ab.y));
+    __m128 mask1 = _mm_cmplt_ps(wC, _mm_setzero_ps());
+
+    // Use same reduction for wB & wA
+    __m128 wB = _mm_sub_ps(_mm_mul_ps(ap.x, ac.y), _mm_mul_ps(ac.x, ap.y));
+    __m128 mask2 = _mm_cmplt_ps(wB, _mm_setzero_ps());
+
+    __m128 wA = _mm_sub_ps(_mm_mul_ps(bc.x, bp.y), _mm_mul_ps(bp.x, bc.y));
+    __m128 mask3 = _mm_cmplt_ps(wA, _mm_setzero_ps());
+
+    bary_result result;
+    result.mask = _mm_or_ps(mask1, _mm_or_ps(mask2, mask3));
+
+    // Use a similar reduction for cross of ab x ac (to find unnormalized normal)
+    __m128 norm = _mm_sub_ps(_mm_mul_ps(ab.x, ac.y), _mm_mul_ps(ac.x, ab.y));
+    norm = _mm_rcp_ps(norm);
+
+    // to find length of this cross product, which already know is purely in the z
+    // direction, is just the length of the z component, which is the exactly the single
+    // channel norm we computed above. Similar logic is used for lengths of each of
+    // the weights, since they are all single channel vectors, the one channel is exactly
+    // the length.
+
+    result.xA = _mm_mul_ps(wA, norm);
+    result.xB = _mm_mul_ps(wB, norm);
+    result.xC = _mm_mul_ps(wC, norm);
+
+    return result;
+}
+
+struct alignas(16) lerp_result
+{
+    __m128 mask;
+    vec4 position;
+    vec3 color;
+};
+
+__forceinline lerp_result __vectorcall sseLerp(
+    const vs_output v1, const vs_output v2, const vs_output v3,
+    const vec2 ab, const vec2 bc, const vec2 ac,
+    const vec2 p)
+{
+    bary_result bary = sseBary2D(
+        v1.Position, v2.Position,
+        ab, bc, ac,
+        p);
+
+    lerp_result result;
+    result.mask = bary.mask;
+
+    // Interpolate all the attributes for these 4 pixels
+    result.position.x = _mm_add_ps(_mm_mul_ps(v1.Position.x, bary.xA), _mm_add_ps(_mm_mul_ps(v2.Position.x, bary.xB), _mm_mul_ps(v3.Position.x, bary.xC)));
+    result.position.y = _mm_add_ps(_mm_mul_ps(v1.Position.y, bary.xA), _mm_add_ps(_mm_mul_ps(v2.Position.y, bary.xB), _mm_mul_ps(v3.Position.y, bary.xC)));
+    result.position.z = _mm_add_ps(_mm_mul_ps(v1.Position.z, bary.xA), _mm_add_ps(_mm_mul_ps(v2.Position.z, bary.xB), _mm_mul_ps(v3.Position.z, bary.xC)));
+    result.position.w = _mm_set1_ps(1.f);
+
+    result.color.x = _mm_add_ps(_mm_mul_ps(v1.Color.x, bary.xA), _mm_add_ps(_mm_mul_ps(v2.Color.x, bary.xB), _mm_mul_ps(v3.Color.x, bary.xC)));
+    result.color.y = _mm_add_ps(_mm_mul_ps(v1.Color.y, bary.xA), _mm_add_ps(_mm_mul_ps(v2.Color.y, bary.xB), _mm_mul_ps(v3.Color.y, bary.xC)));
+    result.color.z = _mm_add_ps(_mm_mul_ps(v1.Color.z, bary.xA), _mm_add_ps(_mm_mul_ps(v2.Color.z, bary.xB), _mm_mul_ps(v3.Color.z, bary.xC)));
+
+    return result;
+}
+
 TRPipelineThread::TRPipelineThread(int id, TRPipeline* pipeline, SharedPipelineData* sharedData)
     : ID(id)
     , Pipeline(pipeline)
@@ -206,12 +298,14 @@ void TRPipelineThread::ProcessOneTrianglePerThread(const std::shared_ptr<RenderC
     uint64_t iTriangle = SharedData->CurrentTriangle++;
     while (iTriangle < command->NumTriangles)
     {
-        float4 tp1, tp2, tp3;
-        float3 tc1, tc2, tc3;
-        GetTriangleVerts(iTriangle, &tp1, &tp2, &tp3, &tc1, &tc2, &tc3);
+        uint64_t iFirstVertex = iTriangle * 3;
 
-        float4 verts[]{ tp1, tp2, tp3 };
-        DDARastTriangle(command, iTriangle * 3, verts, renderTarget, rtWidth, rtHeight, rtPitchInPixels);
+        float4 verts[3];
+        GetVertexAttributes(iFirstVertex, &verts[0], nullptr);
+        GetVertexAttributes(iFirstVertex + 1, &verts[1], nullptr);
+        GetVertexAttributes(iFirstVertex + 2, &verts[2], nullptr);
+
+        DDARastTriangle(command, iFirstVertex, verts, renderTarget, rtWidth, rtHeight, rtPitchInPixels);
 
         iTriangle = SharedData->CurrentTriangle++;
     }
@@ -240,17 +334,17 @@ void TRPipelineThread::ProcessOneTilePerThread(const std::shared_ptr<RenderComma
     uint64_t iTriangle = SharedData->CurrentTriangle++;
     while (iTriangle < command->NumTriangles)
     {
-        float4 tp1, tp2, tp3;
-        float3 tc1, tc2, tc3;
-
-        GetTriangleVerts(iTriangle, &tp1, &tp2, &tp3, &tc1, &tc2, &tc3);
+        float4 p1, p2, p3;
+        GetVertexAttributes(iTriangle * 3, &p1, nullptr);
+        GetVertexAttributes(iTriangle * 3 + 1, &p2, nullptr);
+        GetVertexAttributes(iTriangle * 3 + 2, &p3, nullptr);
 
         triangle.iTriangle = iTriangle;
         triangle.Next = nullptr;
 
-        triangle.p1 = float2(tp1.x, tp1.y);
-        triangle.p2 = float2(tp2.x, tp2.y);
-        triangle.p3 = float2(tp3.x, tp3.y);
+        triangle.p1 = float2(p1.x, p1.y);
+        triangle.p2 = float2(p2.x, p2.y);
+        triangle.p3 = float2(p3.x, p3.y);
 
         // edge equation Bx + Cy = 0, where B & C are computed from slope as B = (y1 - y0) and C = -(x1 - x0) or (x0 - x1).
         triangle.e1 = float2(triangle.p2.y - triangle.p1.y, triangle.p1.x - triangle.p2.x);
@@ -616,22 +710,19 @@ void TRPipelineThread::sseProcessBlock(
         }
         else
         {
-            float4 tp1, tp2, tp3;
-            float3 tc1, tc2, tc3;
-
-            GetTriangleVerts(triangle.iTriangle, &tp1, &tp2, &tp3, &tc1, &tc2, &tc3);
-
-            vec4 p1 = { _mm_set1_ps(tp1.x), _mm_set1_ps(tp1.y), _mm_set1_ps(tp1.z), _mm_set1_ps(tp1.w) };
-            vec4 p2 = { _mm_set1_ps(tp2.x), _mm_set1_ps(tp2.y), _mm_set1_ps(tp2.z), _mm_set1_ps(tp2.w) };
-            vec4 p3 = { _mm_set1_ps(tp3.x), _mm_set1_ps(tp3.y), _mm_set1_ps(tp3.z), _mm_set1_ps(tp3.w) };
-
-            vec3 c1 = { _mm_set1_ps(tc1.x), _mm_set1_ps(tc1.y), _mm_set1_ps(tc1.z) };
-            vec3 c2 = { _mm_set1_ps(tc2.x), _mm_set1_ps(tc2.y), _mm_set1_ps(tc2.z) };
-            vec3 c3 = { _mm_set1_ps(tc3.x), _mm_set1_ps(tc3.y), _mm_set1_ps(tc3.z) };
+            vs_output v1 = GetSSEVertexAttributes(triangle.iTriangle * 3);
+            vs_output v2 = GetSSEVertexAttributes(triangle.iTriangle * 3 + 1);
+            vs_output v3 = GetSSEVertexAttributes(triangle.iTriangle * 3 + 2);
 
             // rasterize the pixels!
-            lerp_result lerp = sseLerp(p1, p2, p3, c1, c2, c3, vec2{ base_corner_x, base_corner_y });
-            imask |= _mm_movemask_ps(lerp.mask);
+            lerp_result lerp = sseLerp(
+                v1, v2, v3,
+                vec2{ _mm_sub_ps(v2.Position.x, v1.Position.x),_mm_sub_ps(v2.Position.y, v1.Position.y) },
+                vec2{ _mm_sub_ps(v3.Position.x, v2.Position.x),_mm_sub_ps(v3.Position.y, v2.Position.y) },
+                vec2{ _mm_sub_ps(v3.Position.x, v1.Position.x),_mm_sub_ps(v3.Position.y, v1.Position.y) },
+                vec2{ base_corner_x, base_corner_y });
+
+                imask |= _mm_movemask_ps(lerp.mask);
 
             vs_output input{ lerp.position, lerp.color };
             vec4 frags = command->PixelShader(command->PixelShader, input);
@@ -659,115 +750,6 @@ void TRPipelineThread::sseProcessBlock(
     }
 }
 
-// Compute barycentric coordinates (lerp weights) for 4 samples at once.
-// The computation is done in 2 dimensions (screen space).
-// in: a (ax, ay), b (bx, by) and c (cx, cy) are the 3 vertices of the triangle.
-//     p (px, py) is the point to compute barycentric coordinates for
-// out: wA, wB, wC are the weights at vertices a, b, and c
-//      mask will contain a 0 (clear) if the value is computed. It will be 0xFFFFFFFF (set) if invalid
-bary_result TRPipelineThread::sseBary2D(const vec2 a, const vec2 b, const vec2 c, const vec2 p)
-{
-    __m128 abx = _mm_sub_ps(b.x, a.x);
-    __m128 aby = _mm_sub_ps(b.y, a.y);
-    __m128 acx = _mm_sub_ps(c.x, a.x);
-    __m128 acy = _mm_sub_ps(c.y, a.y);
-
-    // Find barycentric coordinates of P (wA, wB, wC)
-    __m128 bcx = _mm_sub_ps(c.x, b.x);
-    __m128 bcy = _mm_sub_ps(c.y, b.y);
-    __m128 apx = _mm_sub_ps(p.x, a.x);
-    __m128 apy = _mm_sub_ps(p.y, a.y);
-    __m128 bpx = _mm_sub_ps(p.x, b.x);
-    __m128 bpy = _mm_sub_ps(p.y, b.y);
-
-    // float3 wC = cross(ab, ap);
-    // expand out to:
-    //    wC.x = ab.y * ap.z - ap.y * ab.z;
-    //    wC.y = ab.z * ap.x - ap.z * ab.x;
-    //    wC.z = ab.x * ap.y - ap.x * ab.y;
-    // since we are doing in screen space, z is always 0 so simplify:
-    //    wC.x = 0
-    //    wC.y = 0
-    //    wC.z = ab.x * ap.y - ap.x * ab.y
-    // or, simply:
-    //    wC = abx * apy - apx * aby;
-    __m128 wC = _mm_sub_ps(_mm_mul_ps(abx, apy), _mm_mul_ps(apx, aby));
-    __m128 mask1 = _mm_cmplt_ps(wC, _mm_setzero_ps());
-
-    // Use same reduction for wB & wA
-    __m128 wB = _mm_sub_ps(_mm_mul_ps(apx, acy), _mm_mul_ps(acx, apy));
-    __m128 mask2 = _mm_cmplt_ps(wB, _mm_setzero_ps());
-
-    __m128 wA = _mm_sub_ps(_mm_mul_ps(bcx, bpy), _mm_mul_ps(bpx, bcy));
-    __m128 mask3 = _mm_cmplt_ps(wA, _mm_setzero_ps());
-
-    bary_result result;
-    result.mask = _mm_or_ps(mask1, _mm_or_ps(mask2, mask3));
-
-    // Use a similar reduction for cross of ab x ac (to find unnormalized normal)
-    __m128 norm = _mm_sub_ps(_mm_mul_ps(abx, acy), _mm_mul_ps(acx, aby));
-    norm = _mm_rcp_ps(norm);
-
-    // to find length of this cross product, which already know is purely in the z
-    // direction, is just the length of the z component, which is the exactly the single
-    // channel norm we computed above. Similar logic is used for lengths of each of
-    // the weights, since they are all single channel vectors, the one channel is exactly
-    // the length.
-
-    result.xA = _mm_mul_ps(wA, norm);
-    result.xB = _mm_mul_ps(wB, norm);
-    result.xC = _mm_mul_ps(wC, norm);
-
-    return result;
-}
-
-TRPipelineThread::lerp_result TRPipelineThread::sseLerp(
-    const vec4 p1, const vec4 p2, const vec4 p3,
-    const vec3 c1, const vec3 c2, const vec3 c3,
-    const vec2 p)
-{
-    bary_result bary = sseBary2D(vec2{ p1.x, p1.y }, vec2{ p2.x, p2.y }, vec2{ p3.x, p3.y }, p);
-
-    lerp_result result;
-    result.mask = bary.mask;
-
-    // Interpolate all the attributes for these 4 pixels
-    result.position.x = _mm_add_ps(_mm_mul_ps(p1.x, bary.xA), _mm_add_ps(_mm_mul_ps(p2.x, bary.xB), _mm_mul_ps(p3.x, bary.xC)));
-    result.position.y = _mm_add_ps(_mm_mul_ps(p1.y, bary.xA), _mm_add_ps(_mm_mul_ps(p2.y, bary.xB), _mm_mul_ps(p3.y, bary.xC)));
-    result.position.z = _mm_add_ps(_mm_mul_ps(p1.z, bary.xA), _mm_add_ps(_mm_mul_ps(p2.z, bary.xB), _mm_mul_ps(p3.z, bary.xC)));
-    result.position.w = _mm_set1_ps(1.f);
-
-    result.color.x = _mm_add_ps(_mm_mul_ps(c1.x, bary.xA), _mm_add_ps(_mm_mul_ps(c2.x, bary.xB), _mm_mul_ps(c3.x, bary.xC)));
-    result.color.y = _mm_add_ps(_mm_mul_ps(c1.y, bary.xA), _mm_add_ps(_mm_mul_ps(c2.y, bary.xB), _mm_mul_ps(c3.y, bary.xC)));
-    result.color.z = _mm_add_ps(_mm_mul_ps(c1.z, bary.xA), _mm_add_ps(_mm_mul_ps(c2.z, bary.xB), _mm_mul_ps(c3.z, bary.xC)));
-
-    return result;
-}
-
-void TRPipelineThread::GetTriangleVerts(uint64_t iTriangle, float4* p1, float4* p2, float4* p3, float3* c1, float3* c2, float3* c3)
-{
-    uint64_t iP1 = iTriangle * 3;
-    uint64_t iP2 = iP1 + 1;
-    uint64_t iP3 = iP2 + 1;
-
-    uint64_t iP1base = iP1 / 4;
-    uint64_t iP1off = iP1 % 4;
-    uint64_t iP2base = iP2 / 4;
-    uint64_t iP2off = iP2 % 4;
-    uint64_t iP3base = iP3 / 4;
-    uint64_t iP3off = iP3 % 4;
-
-    SSEVSOutput* v = SharedData->VSOutputs;
-
-    *p1 = float4(v[iP1base].Position_x[iP1off], v[iP1base].Position_y[iP1off], v[iP1base].Position_z[iP1off], v[iP1base].Position_w[iP1off]);
-    *p2 = float4(v[iP2base].Position_x[iP2off], v[iP2base].Position_y[iP2off], v[iP2base].Position_z[iP2off], v[iP2base].Position_w[iP2off]);
-    *p3 = float4(v[iP3base].Position_x[iP3off], v[iP3base].Position_y[iP3off], v[iP3base].Position_z[iP3off], v[iP3base].Position_w[iP3off]);
-
-    *c1 = float3(v[iP1base].Color_x[iP1off], v[iP1base].Color_y[iP1off], v[iP1base].Color_z[iP1off]);
-    *c2 = float3(v[iP2base].Color_x[iP2off], v[iP2base].Color_y[iP2off], v[iP2base].Color_z[iP2off]);
-    *c3 = float3(v[iP3base].Color_x[iP3off], v[iP3base].Color_y[iP3off], v[iP3base].Color_z[iP3off]);
-}
-
 void TRPipelineThread::ConvertFragsToColors(const vec4 frags, uint32_t colors[4])
 {
     __m128 x = _mm_mul_ps(frags.x, _mm_set1_ps(255.f));
@@ -792,7 +774,28 @@ void TRPipelineThread::ConvertFragsToColors(const vec4 frags, uint32_t colors[4]
 
 
 
+void TRPipelineThread::GetVertexAttributes(uint64_t iVertex, float4* position, float3* color)
+{
+    uint64_t iBase = iVertex / 4;
+    uint64_t iOff = iVertex % 4;
 
+    SSEVSOutput* v = SharedData->VSOutputs;
+
+    if (position)
+    {
+        position->x = v[iBase].Position_x[iOff];
+        position->y = v[iBase].Position_y[iOff];
+        position->z = v[iBase].Position_z[iOff];
+        position->w = v[iBase].Position_w[iOff];
+    }
+
+    if (color)
+    {
+        color->x = v[iBase].Color_x[iOff];
+        color->y = v[iBase].Color_y[iOff];
+        color->z = v[iBase].Color_z[iOff];
+    }
+}
 
 vs_output TRPipelineThread::GetSSEVertexAttributes(uint64_t iVertex)
 {
@@ -901,15 +904,19 @@ void TRPipelineThread::DDARastTriangle(
     vs_output v1 = GetSSEVertexAttributes(iFirstVertex);
     vs_output v2 = GetSSEVertexAttributes(iFirstVertex + 1);
     vs_output v3 = GetSSEVertexAttributes(iFirstVertex + 2);
+    vec2 ab{ _mm_sub_ps(v2.Position.x, v1.Position.x),_mm_sub_ps(v2.Position.y, v1.Position.y) };
+    vec2 bc{ _mm_sub_ps(v3.Position.x, v2.Position.x),_mm_sub_ps(v3.Position.y, v2.Position.y) };
+    vec2 ac{ _mm_sub_ps(v3.Position.x, v1.Position.x),_mm_sub_ps(v3.Position.y, v1.Position.y) };
 
-    int y = (int)ytop;
+    int y = std::max(0, (int)ytop);
+
     rast_span* span = spans;
     for (; next_span > 0; --next_span, ++span)
     {
         for (int x = (int)span->x1; x < (int)span->x2; x += 4)
         {
             lerp_result lerp = sseLerp(
-                v1.Position, v2.Position, v3.Position, v1.Color, v2.Color, v3.Color,
+                v1, v2, v3, ab, bc, ac,
                 vec2{ _mm_set_ps((float)x, x + 1.f, x + 2.f, x + 3.f), _mm_set1_ps((float)y) });
 
             int imask = _mm_movemask_ps(lerp.mask);

@@ -300,7 +300,7 @@ bool AppStartup()
         }
     }
 #else
-    for (int i = 0; i < 1; ++i)
+    for (int i = 0; i < 18000; ++i)
     {
         vertices.push_back(Vertex(float3(-0.5f, -0.5f, 0.f), float3(0.f, 0.f, 1.f)));
         vertices.push_back(Vertex(float3(0.f, 0.5f, 0.f), float3(0.f, 1.f, 0.f)));
