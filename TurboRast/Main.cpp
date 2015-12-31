@@ -14,7 +14,7 @@ static const wchar_t WinClassName[] = L"TurboRastDemoApp";
 static const wchar_t WinTitle[] = L"TurboRast Demo App";
 static const uint32_t OutputWidth = 1280;
 static const uint32_t OutputHeight = 720;
-static const uint32_t MaxFramesInFlight = 2;
+static const uint32_t MaxFramesInFlight = 3;
 
 static HINSTANCE Instance;
 static HWND Window;
@@ -214,11 +214,18 @@ bool DXStartup()
         D3D11_TEXTURE2D_DESC desc{};
         BackBuffer->GetDesc(&desc);
 
+#if 0
         // TODO: Is it faster to write into our own buffer and then blit it in? Needs testing
         desc.MiscFlags = 0;
         desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
         desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
         desc.Usage = D3D11_USAGE_DYNAMIC;
+#endif
+
+        desc.MiscFlags = 0;
+        desc.BindFlags = 0;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        desc.Usage = D3D11_USAGE_STAGING;
 
         for (int i = 0; i < _countof(CPUBuffer) && SUCCEEDED(hr); ++i)
         {
@@ -280,7 +287,7 @@ bool AppStartup()
     // Fill in vertices for triangle
 #define RENDER_MANY
 #ifdef RENDER_MANY
-    for (float z = 5.f; z >= -5.f; z -= 0.25f)
+    for (float z = 5.f; z >= -5.f; z -= 1.f)
     {
         for (float y = 5.f; y >= -5.f; y -= 0.25f)
         {
@@ -346,7 +353,7 @@ bool DoFrame()
 #endif
 
     D3D11_MAPPED_SUBRESOURCE mapped{};
-    HRESULT hr = Context->Map(CPUBuffer[FrameIndex].Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+    HRESULT hr = Context->Map(CPUBuffer[FrameIndex].Get(), 0, D3D11_MAP_WRITE, 0, &mapped);
     if (FAILED(hr))
     {
         assert(false);

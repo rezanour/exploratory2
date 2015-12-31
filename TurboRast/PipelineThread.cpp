@@ -208,162 +208,10 @@ void TRPipelineThread::ProcessOneTrianglePerThread(const std::shared_ptr<RenderC
     {
         float4 tp1, tp2, tp3;
         float3 tc1, tc2, tc3;
-
         GetTriangleVerts(iTriangle, &tp1, &tp2, &tp3, &tc1, &tc2, &tc3);
 
-        triangle.iTriangle = iTriangle;
-        triangle.p1 = float2(tp1.x, tp1.y);
-        triangle.p2 = float2(tp2.x, tp2.y);
-        triangle.p3 = float2(tp3.x, tp3.y);
-
-        vec4 p1 = { _mm_set1_ps(tp1.x), _mm_set1_ps(tp1.y), _mm_set1_ps(tp1.z), _mm_set1_ps(tp1.w) };
-        vec4 p2 = { _mm_set1_ps(tp2.x), _mm_set1_ps(tp2.y), _mm_set1_ps(tp2.z), _mm_set1_ps(tp2.w) };
-        vec4 p3 = { _mm_set1_ps(tp3.x), _mm_set1_ps(tp3.y), _mm_set1_ps(tp3.z), _mm_set1_ps(tp3.w) };
-
-        vec3 c1 = { _mm_set1_ps(tc1.x), _mm_set1_ps(tc1.y), _mm_set1_ps(tc1.z) };
-        vec3 c2 = { _mm_set1_ps(tc2.x), _mm_set1_ps(tc2.y), _mm_set1_ps(tc2.z) };
-        vec3 c3 = { _mm_set1_ps(tc3.x), _mm_set1_ps(tc3.y), _mm_set1_ps(tc3.z) };
-
-        float2 verts[] = { triangle.p1, triangle.p2, triangle.p3 };
-        uint32_t top = 0, bottom = 0, mid = 0;
-
-        for (uint32_t j = 0; j < 3; ++j)
-        {
-            if (verts[j].y > verts[bottom].y) bottom = j;
-            if (verts[j].y < verts[top].y) top = j;
-        }
-
-        for (uint32_t j = 0; j < 3; ++j)
-        {
-            if (j != top && j != bottom)
-            {
-                mid = j;
-                break;
-            }
-        }
-
-        // first, rasterize from top to other
-        float ytop = verts[top].y;
-        float ymid = verts[mid].y;
-        float ybottom = verts[bottom].y;
-
-        uint32_t left = (verts[mid].x < verts[bottom].x) ? mid : bottom;
-        uint32_t right = (left == mid) ? bottom : mid;
-
-        float step1 =
-            (verts[left].x - verts[top].x) /
-            (verts[left].y - verts[top].y);
-
-        float step2 =
-            (verts[right].x - verts[top].x) /
-            (verts[right].y - verts[top].y);
-
-        float x1 = verts[top].x;
-        float x2 = x1;
-
-        __m128 step = _mm_set_ps(0, 0, step2, step1);
-        __m128 spanx = _mm_set_ps(0, 0, x2, x1);
-
-        for (int y = (int)ytop; y < (int)ymid; ++y)
-        {
-            if (y < 0) continue;
-            if (y >= rtHeight) break;
-
-            // rasterize span from (x1,y) to (x2,y)
-            x1 = spanx.m128_f32[0];
-            x2 = spanx.m128_f32[1];
-            for (int x = (int)x1; x < (int)x2; x += 4)
-            {
-                if (x < 0) continue;
-                if (x >= rtWidth) break;
-
-                lerp_result lerp = sseLerp(p1, p2, p3, c1, c2, c3, vec2{ _mm_set_ps((float)x, x + 1.f, x + 2.f, x + 3.f), _mm_set1_ps((float)y) });
-                int imask = _mm_movemask_ps(lerp.mask);
-
-                vs_output input{ lerp.position, lerp.color };
-                vec4 frags = command->PixelShader(command->PixelShader, input);
-
-                uint32_t colors[4];
-                ConvertFragsToColors(frags, colors);
-
-                if ((imask & 0x08) == 0)
-                {
-                    renderTarget[y * rtPitchInPixels + x] = colors[3];
-                }
-                if ((imask & 0x04) == 0)
-                {
-                    renderTarget[y * rtPitchInPixels + x + 1] = colors[2];
-                }
-                if ((imask & 0x02) == 0)
-                {
-                    renderTarget[y * rtPitchInPixels + x + 2] = colors[1];
-                }
-                if ((imask & 0x01) == 0)
-                {
-                    renderTarget[y * rtPitchInPixels + x + 3] = colors[0];
-                }
-            }
-
-            spanx = _mm_add_ps(spanx, step);
-        }
-
-        // then, from other to bottom
-        left = (verts[top].x < verts[mid].x) ? top : mid;
-        right = (left == top) ? mid : top;
-
-        step1 =
-            (verts[bottom].x - verts[left].x) /
-            (verts[bottom].y - verts[left].y);
-
-        step2 =
-            (verts[bottom].x - verts[right].x) /
-            (verts[bottom].y - verts[right].y);
-
-        step = _mm_set_ps(0, 0, step2, step1);
-        spanx = _mm_set_ps(0, 0, x2, x1);
-
-        for (int y = (int)ymid; y < (int)ybottom; ++y)
-        {
-            if (y < 0) continue;
-            if (y >= rtHeight) break;
-
-            // rasterize span from (x1,y) to (x2,y)
-            x1 = spanx.m128_f32[0];
-            x2 = spanx.m128_f32[1];
-            for (int x = (int)x1; x < (int)x2; x += 4)
-            {
-                if (x < 0) continue;
-                if (x >= rtWidth) break;
-
-                lerp_result lerp = sseLerp(p1, p2, p3, c1, c2, c3, vec2{ _mm_set_ps((float)x, x + 1.f, x + 2.f, x + 3.f), _mm_set1_ps((float)y) });
-                int imask = _mm_movemask_ps(lerp.mask);
-
-                vs_output input{ lerp.position, lerp.color };
-                vec4 frags = command->PixelShader(command->PixelShader, input);
-
-                uint32_t colors[4];
-                ConvertFragsToColors(frags, colors);
-
-                if ((imask & 0x08) == 0)
-                {
-                    renderTarget[y * rtPitchInPixels + x] = colors[3];
-                }
-                if ((imask & 0x04) == 0)
-                {
-                    renderTarget[y * rtPitchInPixels + x + 1] = colors[2];
-                }
-                if ((imask & 0x02) == 0)
-                {
-                    renderTarget[y * rtPitchInPixels + x + 2] = colors[1];
-                }
-                if ((imask & 0x01) == 0)
-                {
-                    renderTarget[y * rtPitchInPixels + x + 3] = colors[0];
-                }
-            }
-
-            spanx = _mm_add_ps(spanx, step);
-        }
+        float4 verts[]{ tp1, tp2, tp3 };
+        DDARastTriangle(command, iTriangle * 3, verts, renderTarget, rtWidth, rtHeight, rtPitchInPixels);
 
         iTriangle = SharedData->CurrentTriangle++;
     }
@@ -388,6 +236,7 @@ void TRPipelineThread::ProcessOneTilePerThread(const std::shared_ptr<RenderComma
     // Parallel Bin the triangles first
 
     Triangle triangle;
+
     uint64_t iTriangle = SharedData->CurrentTriangle++;
     while (iTriangle < command->NumTriangles)
     {
@@ -397,6 +246,8 @@ void TRPipelineThread::ProcessOneTilePerThread(const std::shared_ptr<RenderComma
         GetTriangleVerts(iTriangle, &tp1, &tp2, &tp3, &tc1, &tc2, &tc3);
 
         triangle.iTriangle = iTriangle;
+        triangle.Next = nullptr;
+
         triangle.p1 = float2(tp1.x, tp1.y);
         triangle.p2 = float2(tp2.x, tp2.y);
         triangle.p3 = float2(tp3.x, tp3.y);
@@ -433,10 +284,14 @@ void TRPipelineThread::ProcessOneTilePerThread(const std::shared_ptr<RenderComma
             {
                 auto& bin = SharedData->Bins[r * SharedData->NumHorizBins + c];
 
-                // claim an index
-                int64_t index = bin.CurrentTriangle++;
-                assert(index < _countof(bin.Triangles));
-                bin.Triangles[index] = triangle;
+                Triangle* triangleBin = &SharedData->TriangleMemory[SharedData->CurrentTriangleBin++];
+                *triangleBin = triangle;
+
+                triangleBin->Next = bin.Head;
+                while (!bin.Head.compare_exchange_strong(triangleBin->Next, triangleBin))
+                {
+                    triangleBin->Next = bin.Head;
+                }
             }
         }
 
@@ -475,12 +330,16 @@ void TRPipelineThread::ProcessOneTilePerThread(const std::shared_ptr<RenderComma
         int x = (iBin % SharedData->NumHorizBins) * SharedData->TileSize;
         int y = (iBin / SharedData->NumHorizBins) * SharedData->TileSize;
 
-        for (iTriangle = 0; iTriangle < bin.CurrentTriangle; ++iTriangle)
+        Triangle* t = bin.Head;
+        while (t != nullptr)
         {
-            sseProcessBlock(command, bin.Triangles[iTriangle],
+            sseProcessBlock(command, *t,
                 x, y, SharedData->TileSize,
                 renderTarget, rtWidth, rtHeight, rtPitchInPixels);
+
+            t = t->Next;
         }
+
         iBin = SharedData->CurrentBin++;
     }
 
@@ -555,6 +414,7 @@ void TRPipelineThread::SerialInitialization(const std::shared_ptr<RenderCommand>
     // Reset some internal shared state
     SharedData->CurrentVertex = 0;
     SharedData->CurrentTriangle = 0;
+    SharedData->CurrentTriangleBin = 0;
     SharedData->BinningJoinBarrier = 0;
     SharedData->BinningWaitBarrier = false;
 
@@ -572,7 +432,7 @@ void TRPipelineThread::SerialInitialization(const std::shared_ptr<RenderCommand>
     // Reset bins
     for (int i = 0; i < SharedData->NumTotalBins; ++i)
     {
-        SharedData->Bins[i].CurrentTriangle = 0;
+        SharedData->Bins[i].Head = nullptr;
     }
 
     SharedData->CurrentBin = 0;
@@ -884,22 +744,6 @@ TRPipelineThread::lerp_result TRPipelineThread::sseLerp(
     return result;
 }
 
-static void test_process_vertex_stream(const SSEVertexBlock* input, SSEVSOutput* output, int count)
-{
-    const SSEVertexBlock* v = input;
-
-    for (int i = 0; i < count; ++i)
-    {
-        vec3 position = { _mm_load_ps(v->Position_x), _mm_load_ps(v->Position_y), _mm_load_ps(v->Position_z) };
-        vec3 color = { _mm_load_ps(v->Color_x), _mm_load_ps(v->Color_y), _mm_load_ps(v->Color_z) };
-
-        _mm_store_ps(output->Position_x, position.x);
-        _mm_store_ps(output->Position_y, position.y);
-        _mm_store_ps(output->Position_z, position.z);
-        _mm_store_ps(output->Position_w, _mm_set1_ps(1.f));
-    }
-}
-
 void TRPipelineThread::GetTriangleVerts(uint64_t iTriangle, float4* p1, float4* p2, float4* p3, float3* c1, float3* c2, float3* c3)
 {
     uint64_t iP1 = iTriangle * 3;
@@ -943,5 +787,150 @@ void TRPipelineThread::ConvertFragsToColors(const vec4 frags, uint32_t colors[4]
     for (int i = 0; i < 4; ++i)
     {
         colors[i] = a.m128i_u32[i] << 24 | b.m128i_u32[i] << 16 | g.m128i_u32[i] << 8 | r.m128i_u32[i];
+    }
+}
+
+
+
+
+
+vs_output TRPipelineThread::GetSSEVertexAttributes(uint64_t iVertex)
+{
+    uint64_t iBase = iVertex / 4;
+    uint64_t iOff = iVertex % 4;
+
+    SSEVSOutput* v = SharedData->VSOutputs;
+
+    vs_output output;
+
+    output.Position.x = _mm_set1_ps(v[iBase].Position_x[iOff]);
+    output.Position.y = _mm_set1_ps(v[iBase].Position_y[iOff]);
+    output.Position.z = _mm_set1_ps(v[iBase].Position_z[iOff]);
+    output.Position.w = _mm_set1_ps(v[iBase].Position_w[iOff]);
+
+    output.Color.x = _mm_set1_ps(v[iBase].Color_x[iOff]);
+    output.Color.y = _mm_set1_ps(v[iBase].Color_y[iOff]);
+    output.Color.z = _mm_set1_ps(v[iBase].Color_z[iOff]);
+
+    return output;
+}
+
+// rasterize a 2D triangle, binning the spans
+void TRPipelineThread::DDARastTriangle(
+    const std::shared_ptr<RenderCommand>& command,
+    uint64_t iFirstVertex,              // to get attributes from later
+    float4 v[3],                        // input position of each vertex
+    uint32_t* renderTarget, int rtWidth, int rtHeight, int pitch)  // output pixels here
+{
+    struct rast_span
+    {
+        float x1, x2;
+    };
+
+    rast_span spans[2048];  // supports up to 2k height render target
+    int next_span = 0;
+
+    assert(rtHeight < _countof(spans));
+
+    // first, sort the vertices based on y
+    int top = 0, mid = 0, bottom = 0;
+
+    for (int i = 1; i < 3; ++i)
+    {
+        if (v[i].y > v[bottom].y) bottom = i;
+        if (v[i].y < v[top].y) top = i;
+    }
+
+    mid = 3 - top - bottom;
+
+    // get y value at each level
+    float ytop = v[top].y;
+    float ymid = v[mid].y;
+    float ybottom = v[bottom].y;
+
+    // first, rasterize from top to mid.
+    // determine between mid & bottom which is left-most and right-most
+    int left = (v[mid].x < v[bottom].x) ? mid : bottom;
+    int right = mid + bottom - left;
+
+    // determine slope step for each side that we'll be walking down.
+    float step1 = (v[left].x - v[top].x) / (v[left].y - v[top].y);
+    float step2 = (v[right].x - v[top].x) / (v[right].y - v[top].y);
+
+    // store starting x value for both sides. They start at same location.
+    float x1 = v[top].x;
+    float x2 = v[top].x;
+
+    int y1 = std::max(0, (int)ytop);
+    int y2 = std::min((int)ymid, rtHeight);
+
+    for (int y = y1; y < y2; ++y)
+    {
+        rast_span* span = &spans[next_span++];
+        span->x1 = std::max(0.f, x1);
+        span->x2 = std::min(x2, (float)rtWidth);
+
+        x1 += step1;
+        x2 += step2;
+    }
+
+    // next, we rasterize lower half of triangle from mid to bottom
+    left = (v[top].x < v[mid].x) ? top : mid;
+    right = top + mid - left;
+
+    step1 = (v[bottom].x - v[left].x) / (v[bottom].y - v[left].y);
+    step2 = (v[bottom].x - v[right].x) / (v[bottom].y - v[right].y);
+
+    // x1 and x2 are left at their current values, since we're continuing
+    // down the same triangle
+
+    y1 = std::max(0, (int)ymid);
+    y2 = std::min((int)ybottom, rtHeight);
+
+    for (int y = y1; y < y2; ++y)
+    {
+        rast_span* span = &spans[next_span++];
+        span->x1 = std::max(0.f, x1);
+        span->x2 = std::min(x2, (float)rtWidth);
+
+        x1 += step1;
+        x2 += step2;
+    }
+
+    // Spans determined, now set up lerping parameters (shared by all spans)
+    vs_output v1 = GetSSEVertexAttributes(iFirstVertex);
+    vs_output v2 = GetSSEVertexAttributes(iFirstVertex + 1);
+    vs_output v3 = GetSSEVertexAttributes(iFirstVertex + 2);
+
+    int y = (int)ytop;
+    rast_span* span = spans;
+    for (; next_span > 0; --next_span, ++span)
+    {
+        for (int x = (int)span->x1; x < (int)span->x2; x += 4)
+        {
+            lerp_result lerp = sseLerp(
+                v1.Position, v2.Position, v3.Position, v1.Color, v2.Color, v3.Color,
+                vec2{ _mm_set_ps((float)x, x + 1.f, x + 2.f, x + 3.f), _mm_set1_ps((float)y) });
+
+            int imask = _mm_movemask_ps(lerp.mask);
+
+            vs_output input{ lerp.position, lerp.color };
+            vec4 frags = command->PixelShader(command->PixelShader, input);
+
+            uint32_t colors[4];
+            ConvertFragsToColors(frags, colors);
+
+            int index = y * pitch + x + 3;
+            for (int i = 0; i < 4; ++i, --index)
+            {
+                if ((imask & 0x01) == 0)
+                {
+                    renderTarget[index] = colors[i];
+                }
+                imask >>= 1;
+            }
+        }
+
+        ++y;
     }
 }

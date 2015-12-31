@@ -48,9 +48,8 @@ TRPipeline::~TRPipeline()
     }
     Threads.clear();
 
-    // Don't delete scratch until after all threads are done running
-    Scratch.clear();
-
+    delete[] SharedData.VSOutputs;
+    delete[] SharedData.TriangleMemory;
     delete[] SharedData.VertexStartTime;
     delete[] SharedData.VertexStopTime;
     delete[] SharedData.TriangleStartTime;
@@ -88,8 +87,10 @@ bool TRPipeline::Initialize()
     }
 
     // Configure default scratch space for pipeline threads
-    Scratch.resize(4 * 1024 * 1024);    // 4 MB
-    SharedData.VSOutputs = (SSEVSOutput*)Scratch.data();
+    SharedData.MaxVSOutputs = 128 * 1024;   // 128k vertex blocks (4 verts) per draw. total: 512k verts per draw
+    SharedData.MaxTriangles = 256 * 1024;   // 256k triangles per draw
+    SharedData.VSOutputs = new SSEVSOutput[SharedData.MaxVSOutputs];
+    SharedData.TriangleMemory = new Triangle[SharedData.MaxTriangles];
 
     for (int i = 0; i < SharedData.NumThreads; ++i)
     {
@@ -112,14 +113,23 @@ bool TRPipeline::Render(const std::shared_ptr<RenderCommand>& command)
     // However, we can't resize while there is outstanding work using the
     // current scratch address, so we need to stall until oustanding work
     // completes
-    if (command->NumVertices * sizeof(SSEVSOutput) > Scratch.size())
+    if ((command->NumVertices > SharedData.MaxVSOutputs) ||
+        (command->NumTriangles * 10 > SharedData.MaxTriangles)) // average of triangle being in 10 bins at once
     {
         FlushAndWait();
 
-        Scratch.resize(command->NumVertices * sizeof(SSEVSOutput));
-
-        // Update the shared data pointer
-        SharedData.VSOutputs = (SSEVSOutput*)Scratch.data();
+        if (command->NumVertices > SharedData.MaxVSOutputs)
+        {
+            SharedData.MaxVSOutputs = command->NumVertices;
+            delete[] SharedData.VSOutputs;
+            SharedData.VSOutputs = new SSEVSOutput[SharedData.MaxVSOutputs];
+        }
+        if (command->NumTriangles * 10 > SharedData.MaxTriangles)
+        {
+            SharedData.MaxTriangles = command->NumTriangles * 10;
+            delete[] SharedData.TriangleMemory;
+            SharedData.TriangleMemory = new Triangle[SharedData.MaxTriangles];
+        }
     }
 
     command->FenceValue = ++CurrentFenceValue;

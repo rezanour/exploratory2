@@ -63,6 +63,14 @@ private:
 
     void __vectorcall ConvertFragsToColors(const vec4 frags, uint32_t colors[4]);
 
+    vs_output __vectorcall GetSSEVertexAttributes(uint64_t iVertex);
+
+    void DDARastTriangle(
+        const std::shared_ptr<RenderCommand>& command,
+        uint64_t iFirstVertex,              // to get attributes from later
+        float4 v[3],                        // input position of each vertex
+        uint32_t* renderTarget, int rtWidth, int rtHeight, int pitch);
+
 private:
     int ID;
     TRPipeline* Pipeline;

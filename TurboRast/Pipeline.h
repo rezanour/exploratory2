@@ -12,17 +12,16 @@ enum class RastStrategy
 // Binning
 struct Triangle
 {
+    uint64_t iTriangle;
     float2 p1, p2, p3;
     float2 e1, e2, e3;
     float2 o1, o2, o3;
-    uint64_t iTriangle;
+    Triangle* Next = nullptr;
 };
 
 struct Bin
 {
-    static const size_t MaxTrianglesPerBin = 64 * 1024; // 128K
-    Triangle Triangles[MaxTrianglesPerBin];
-    std::atomic_uint64_t CurrentTriangle;
+    std::atomic<Triangle*> Head;
 };
 
 // Data shared between pipeline threads
@@ -37,6 +36,10 @@ struct SharedPipelineData
     std::atomic_uint64_t CurrentTriangle = 0;
 
     SSEVSOutput* VSOutputs = nullptr;
+    uint64_t MaxVSOutputs = 0;
+    Triangle* TriangleMemory = nullptr;
+    uint64_t MaxTriangles = 0;
+    std::atomic_uint64_t CurrentTriangleBin = 0;
 
     // synchronization barriers
 
@@ -120,7 +123,6 @@ private:
     static const DWORD ThreadShutdownTimeoutMs = 10000;
 
     SharedPipelineData SharedData;
-    std::vector<uint8_t> Scratch;
     Microsoft::WRL::Wrappers::Event ShutdownEvent;
     std::vector<std::unique_ptr<TRPipelineThread>> Threads;
 
