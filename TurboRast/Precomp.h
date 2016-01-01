@@ -20,4 +20,4 @@ typedef Microsoft::WRL::Wrappers::HandleT<Microsoft::WRL::Wrappers::HandleTraits
     className(const className&) = delete;   \
     className& operator= (const className&) = delete;
 
-#include "TurboRastTypes.h"
+#include "TRTypes.h"

@@ -37,6 +37,11 @@ void TRDevice::Draw(uint64_t vertexCount, uint64_t baseVertex)
 
     std::shared_ptr<RenderCommand> command = std::make_shared<RenderCommand>();
 
+    command->InputVertexLayout = InputVertexLayout;
+    command->InputVertexStride = InputVertexStride;
+    command->OutputVertexLayout = OutputVertexLayout;
+    command->OutputVertexStride = OutputVertexStride;
+
     // Input
     command->VertexBuffer = VertexBuffer;
     command->NumVertices = vertexCount;
@@ -44,10 +49,13 @@ void TRDevice::Draw(uint64_t vertexCount, uint64_t baseVertex)
 
     // Vertex Shader
     command->VertexShader = VertexShader;
+    command->VertexShader2 = VertexShader2;
+    command->VertexShader3 = VertexShader3;
     command->VSConstantBuffer = VSConstantBuffer;
 
     // Pixel Shader
     command->PixelShader = PixelShader;
+    command->PixelShader2 = PixelShader2;
     command->PSConstantBuffer = PSConstantBuffer;
 
     // Output

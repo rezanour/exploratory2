@@ -92,8 +92,9 @@
     <ClInclude Include="Device.h" />
     <ClInclude Include="PipelineThread.h" />
     <ClInclude Include="Texture2D.h" />
-    <ClInclude Include="TurboRastMath.h" />
-    <ClInclude Include="TurboRastTypes.h" />
+    <ClInclude Include="PipelineThread2.h" />
+    <ClInclude Include="TRMath.h" />
+    <ClInclude Include="TRTypes.h" />
     <ClInclude Include="VertexBuffer.h" />
   </ItemGroup>
   <ItemGroup>
@@ -105,6 +106,7 @@
     </ClCompile>
     <ClCompile Include="Device.cpp" />
     <ClCompile Include="PipelineThread.cpp" />
+    <ClCompile Include="PipelineThread2.cpp" />
     <ClCompile Include="VertexBuffer.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

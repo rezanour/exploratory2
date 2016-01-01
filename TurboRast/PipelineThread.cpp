@@ -98,6 +98,134 @@ __forceinline lerp_result __vectorcall sseLerp(
     return result;
 }
 
+static void clip_pivot_inside(float3 verts[3], int i, float3 n, float d, float3 output[3])
+{
+    // pivot vertex i is inside, and other 2 verts are outside
+
+    // We want to keep the pivot point (it's inside),
+    // and we want to replace both external points with intersections
+    // on their respective edges
+    int i2 = i + 1;
+    if (i2 > 3) i2 = 0;
+
+    int i3 = i + 2;
+    if (i3 > 3) i3 = 0;
+
+    float dotA = -(dot(verts[i], n) - d);
+
+    // clip edge 1
+    float3 e1 = verts[i2] - verts[i];
+    float d1Total = dot(e1, n);
+    float s1 = dotA / d1Total;
+    float3 v1 = verts[i] + (e1 * s1);
+
+    // clip edge 2
+    float3 e2 = verts[i3] - verts[i];
+    float d2Total = dot(e2, n);
+    float s2 = dotA / d2Total;
+    float3 v2 = verts[i] + (e2 * s2);
+
+    // triangulate (A, v1, v2)
+    output[0] = verts[i];
+    output[1] = v1;
+    output[2] = v2;
+}
+
+static void clip_pivot_outside(float3 verts[3], int i, float3 n, float d, float3 output1[3], float3 output2[3])
+{
+    // pivot vertex i is outside, and other 2 verts are inside
+
+    // We want to reject the pivot point (it's outside),
+    // and we want to triangulate the other 2 with 2 respective
+    // edge intersections
+    int i2 = i + 1;
+    if (i2 > 3) i2 = 0;
+
+    int i3 = i + 2;
+    if (i3 > 3) i3 = 0;
+
+    float dotA = -(dot(verts[i], n) - d);
+
+    // clip edge 1
+    float3 e1 = verts[i2] - verts[i];
+    float d1Total = dot(e1, n);
+    float s1 = dotA / d1Total;
+    float3 v1 = verts[i] + (e1 * s1);
+
+    // clip edge 2
+    float3 e2 = verts[i3] - verts[i];
+    float d2Total = dot(e2, n);
+    float s2 = dotA / d2Total;
+    float3 v2 = verts[i] + (e2 * s2);
+
+    // triangulate (v1, B, v2) & (v2, B, C)
+    output1[0] = v1;
+    output1[1] = verts[i2];
+    output1[2] = v2;
+    output2[0] = v2;
+    output2[1] = verts[i2];
+    output2[2] = verts[i3];
+}
+
+// returns number of triangles returned: 0, 1 (output1), or 2 (output1 & output2)
+static int clip(float3 verts[3], float3 n, float d, float3 output1[3], float3 output2[3])
+{
+    // determine which (if any) verts are outside plane
+    int mask = 0;
+    for (int i = 0; i < 3; ++i)
+    {
+        mask <<= 1;
+        mask |= (dot(verts[i], n) - d > 0) ? 1 : 0;
+    }
+
+    switch (mask)
+    {
+    case 0:
+        // no vertex outside of plane!
+        output1[0] = verts[0];
+        output1[1] = verts[1];
+        output1[2] = verts[2];
+        return 1;
+
+    case 1:
+        // only v3 outside of plane. Pivot on v3 as outside
+        clip_pivot_outside(verts, 2, n, d, output1, output2);
+        return 2;
+
+    case 2:
+        // only v2 outside of plane. Pivot on v2 as outside
+        clip_pivot_outside(verts, 1, n, d, output1, output2);
+        return 2;
+
+    case 3:
+        // v2 & v3 outside of plane. Pivot on v1 as inside
+        clip_pivot_inside(verts, 0, n, d, output1);
+        return 1;
+
+    case 4:
+        // only v1 outside of plane. Pivot on v1 as outside
+        clip_pivot_outside(verts, 0, n, d, output1, output2);
+        return 2;
+
+    case 5:
+        // v1 & v3 outside of plane. Pivot on v2 as inside
+        clip_pivot_inside(verts, 1, n, d, output1);
+        return 1;
+
+    case 6:
+        // v1 & v2 outside of plane. Pivot on v3 as inside
+        clip_pivot_inside(verts, 2, n, d, output1);
+        return 1;
+
+    case 7:
+        // all outside of plane. Reject triangle
+        return 0;
+    }
+
+    assert(false);
+    return 0;
+}
+
 TRPipelineThread::TRPipelineThread(int id, TRPipeline* pipeline, SharedPipelineData* sharedData)
     : ID(id)
     , Pipeline(pipeline)
@@ -187,6 +315,10 @@ void TRPipelineThread::ThreadProc()
 
             case RastStrategy::OneTilePerThread:
                 ProcessOneTilePerThread(command);
+                break;
+
+            case RastStrategy::ScreenTileDDAPerThread:
+                ProcessScreenTileDDAPerThread(command);
                 break;
 
             default:
@@ -295,17 +427,34 @@ void TRPipelineThread::ProcessOneTrianglePerThread(const std::shared_ptr<RenderC
 
     Triangle triangle;
 
-    uint64_t iTriangle = SharedData->CurrentTriangle++;
+    int64_t iTriangle = SharedData->CurrentTriangle++;
     while (iTriangle < command->NumTriangles)
     {
-        uint64_t iFirstVertex = iTriangle * 3;
+        int64_t iFirstVertex = iTriangle * 3;
 
         float4 verts[3];
         GetVertexAttributes(iFirstVertex, &verts[0], nullptr);
         GetVertexAttributes(iFirstVertex + 1, &verts[1], nullptr);
         GetVertexAttributes(iFirstVertex + 2, &verts[2], nullptr);
 
-        DDARastTriangle(command, iFirstVertex, verts, renderTarget, rtWidth, rtHeight, rtPitchInPixels);
+        float3 tris[100]{ *(float3*)&verts[0], *(float3*)&verts[1], *(float3*)&verts[2] };
+        int iTri = 0;
+        int numTris = 1;
+
+        float3 normals[] = { float3(-1, 0, 0), float3(1, 0, 0), float3(0, -1, 0), float3(0, 1, 0), float3(0, 0, -1), float3(0, 0, 1) };
+        float dists[] = { 0, (float)rtWidth, 0, (float)rtHeight, 0, 1.f };
+
+        for (int i = 0; i < _countof(normals) && iTri < numTris; ++i)
+        {
+            numTris += clip(&tris[iTri * 3], normals[i], dists[i], &tris[iTri * 3 + 3], &tris[iTri * 3 + 6]);
+            ++iTri;
+        }
+
+        while (iTri < numTris)
+        {
+            DDARastTriangle(command, iFirstVertex, verts, renderTarget, rtWidth, rtHeight, rtPitchInPixels);
+            ++iTri;
+        }
 
         iTriangle = SharedData->CurrentTriangle++;
     }
@@ -331,7 +480,7 @@ void TRPipelineThread::ProcessOneTilePerThread(const std::shared_ptr<RenderComma
 
     Triangle triangle;
 
-    uint64_t iTriangle = SharedData->CurrentTriangle++;
+    int64_t iTriangle = SharedData->CurrentTriangle++;
     while (iTriangle < command->NumTriangles)
     {
         float4 p1, p2, p3;
@@ -430,6 +579,135 @@ void TRPipelineThread::ProcessOneTilePerThread(const std::shared_ptr<RenderComma
             sseProcessBlock(command, *t,
                 x, y, SharedData->TileSize,
                 renderTarget, rtWidth, rtHeight, rtPitchInPixels);
+
+            t = t->Next;
+        }
+
+        iBin = SharedData->CurrentBin++;
+    }
+
+    if (SharedData->StatsEnabled)
+    {
+        LARGE_INTEGER time;
+        QueryPerformanceCounter(&time);
+        SharedData->TriangleStopTime[ID] = time.QuadPart;
+    }
+}
+
+void TRPipelineThread::ProcessScreenTileDDAPerThread(const std::shared_ptr<RenderCommand>& command)
+{
+    if (SharedData->StatsEnabled)
+    {
+        LARGE_INTEGER time;
+        QueryPerformanceCounter(&time);
+        SharedData->TriangleStartTime[ID] = time.QuadPart;
+    }
+
+    // Parallel Bin the triangles first
+
+    Triangle triangle;
+
+    int64_t iTriangle = SharedData->CurrentTriangle++;
+    while (iTriangle < command->NumTriangles)
+    {
+        float4 p1, p2, p3;
+        GetVertexAttributes(iTriangle * 3, &p1, nullptr);
+        GetVertexAttributes(iTriangle * 3 + 1, &p2, nullptr);
+        GetVertexAttributes(iTriangle * 3 + 2, &p3, nullptr);
+
+        triangle.iTriangle = iTriangle;
+        triangle.Next = nullptr;
+
+        triangle.p1 = float2(p1.x, p1.y);
+        triangle.p2 = float2(p2.x, p2.y);
+        triangle.p3 = float2(p3.x, p3.y);
+
+        // edge equation Bx + Cy = 0, where B & C are computed from slope as B = (y1 - y0) and C = -(x1 - x0) or (x0 - x1).
+        triangle.e1 = float2(triangle.p2.y - triangle.p1.y, triangle.p1.x - triangle.p2.x);
+        triangle.e2 = float2(triangle.p3.y - triangle.p2.y, triangle.p2.x - triangle.p3.x);
+        triangle.e3 = float2(triangle.p1.y - triangle.p3.y, triangle.p3.x - triangle.p1.x);
+
+        // compute corner offset x & y to add to top left corner to find
+        // trivial reject corner for each edge
+        triangle.o1.x = (triangle.e1.x < 0) ? 1.f : 0.f;
+        triangle.o1.y = (triangle.e1.y < 0) ? 1.f : 0.f;
+        triangle.o2.x = (triangle.e2.x < 0) ? 1.f : 0.f;
+        triangle.o2.y = (triangle.e2.y < 0) ? 1.f : 0.f;
+        triangle.o3.x = (triangle.e3.x < 0) ? 1.f : 0.f;
+        triangle.o3.y = (triangle.e3.y < 0) ? 1.f : 0.f;
+
+        // determine overlapped bins by bounding box
+        float2 bb_min = min(triangle.p1, min(triangle.p2, triangle.p3));
+        float2 bb_max = max(triangle.p1, max(triangle.p2, triangle.p3));
+        int x1 = (int)bb_min.x / SharedData->TileSize;
+        int y1 = (int)bb_min.y / SharedData->TileSize;
+        int x2 = (int)bb_max.x / SharedData->TileSize;
+        int y2 = (int)bb_max.y / SharedData->TileSize;
+        x1 = std::max(std::min(x1, SharedData->NumHorizBins - 1), 0);
+        y1 = std::max(std::min(y1, SharedData->NumVertBins - 1), 0);
+        x2 = std::max(std::min(x2, SharedData->NumHorizBins - 1), 0);
+        y2 = std::max(std::min(y2, SharedData->NumVertBins - 1), 0);
+
+        for (int r = y1; r <= y2; ++r)
+        {
+            for (int c = x1; c <= x2; ++c)
+            {
+                auto& bin = SharedData->Bins[r * SharedData->NumHorizBins + c];
+
+                Triangle* triangleBin = &SharedData->TriangleMemory[SharedData->CurrentTriangleBin++];
+                *triangleBin = triangle;
+
+                triangleBin->Next = bin.Head;
+                while (!bin.Head.compare_exchange_strong(triangleBin->Next, triangleBin))
+                {
+                    triangleBin->Next = bin.Head;
+                }
+            }
+        }
+
+        iTriangle = SharedData->CurrentTriangle++;
+    }
+
+    // Now wait for all threads to reach this barrier (indicating that all triangles are done being binned)
+    // before we start processing screen tiles/bins
+    if (++SharedData->BinningJoinBarrier == SharedData->NumThreads)
+    {
+        // Last one through the barrier, signal the rest
+
+        // Signal the wait barrier
+        SharedData->BinningWaitBarrier = true;
+    }
+    else
+    {
+        while (!SharedData->BinningWaitBarrier)
+        {
+            // Allow other threads to make progress
+            _mm_pause();
+        }
+    }
+
+    // Process tiles
+    int rtWidth = command->RenderTarget->GetWidth();
+    int rtHeight = command->RenderTarget->GetHeight();
+    int rtPitchInPixels = command->RenderTarget->GetPitchInPixels();
+    uint32_t* renderTarget = (uint32_t*)command->RenderTarget->GetData();
+
+    int iBin = SharedData->CurrentBin++;
+    while (iBin < SharedData->NumTotalBins)
+    {
+        auto& bin = SharedData->Bins[iBin];
+
+        Triangle* t = bin.Head;
+        while (t != nullptr)
+        {
+            uint64_t iFirstVertex = t->iTriangle * 3;
+
+            float4 verts[3];
+            GetVertexAttributes(iFirstVertex, &verts[0], nullptr);
+            GetVertexAttributes(iFirstVertex + 1, &verts[1], nullptr);
+            GetVertexAttributes(iFirstVertex + 2, &verts[2], nullptr);
+
+            DDARastTriangle(command, iFirstVertex, verts, renderTarget, rtWidth, rtHeight, rtPitchInPixels);
 
             t = t->Next;
         }

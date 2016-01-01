@@ -1,11 +1,13 @@
 #pragma once
 
 class TRPipelineThread;
+class TRPipelineThread2;
 
 enum class RastStrategy
 {
     OneTrianglePerThread = 0,
     OneTilePerThread,
+    ScreenTileDDAPerThread,
     NumStrategies,
 };
 
@@ -32,14 +34,14 @@ struct SharedPipelineData
 
     // Needs to be reset from a pipeline thread in between each
     // render packet. Requires synch barriers
-    std::atomic_uint64_t CurrentVertex = 0;
-    std::atomic_uint64_t CurrentTriangle = 0;
+    std::atomic_int64_t CurrentVertex = 0;
+    std::atomic_int64_t CurrentTriangle = 0;
 
     SSEVSOutput* VSOutputs = nullptr;
-    uint64_t MaxVSOutputs = 0;
+    int64_t MaxVSOutputs = 0;
     Triangle* TriangleMemory = nullptr;
-    uint64_t MaxTriangles = 0;
-    std::atomic_uint64_t CurrentTriangleBin = 0;
+    int64_t MaxTriangles = 0;
+    std::atomic_int64_t CurrentTriangleBin = 0;
 
     // synchronization barriers
 
@@ -75,6 +77,22 @@ struct SharedPipelineData
     std::atomic_bool BinningWaitBarrier = false;
 };
 
+enum class VertexAttributeType
+{
+    Float = 0,
+    Float2,
+    Float3,
+    Float4,
+};
+
+// Description of single vertex attribute
+struct VertexAttributeDesc
+{
+    int ByteOffset;
+    VertexAttributeType Type;
+    const char* Semantic;
+};
+
 // A single render command (ie. a Draw() call)
 struct RenderCommand
 {
@@ -82,20 +100,32 @@ struct RenderCommand
     uint64_t FenceValue;
 
     //========================================
+    // Vertex layout information
+    //========================================
+
+    std::vector<VertexAttributeDesc> InputVertexLayout;
+    std::vector<VertexAttributeDesc> OutputVertexLayout;
+    int64_t InputVertexStride;
+    int64_t OutputVertexStride;
+
+    //========================================
     // Pipeline configuration
     //========================================
 
     // Input (currently only support triangle list)
     std::shared_ptr<const TRVertexBuffer> VertexBuffer;
-    uint64_t NumVertices;
-    uint64_t NumTriangles;
+    int64_t NumVertices;
+    int64_t NumTriangles;
 
     // Vertex Stage
     pfnSSEVertexShader VertexShader;
+    pfnVertexShader VertexShader2;
+    pfnStreamVertexShader VertexShader3;
     void* VSConstantBuffer;
 
     // Pixel Stage
     pfnSSEPixelShader PixelShader;
+    pfnPixelShader PixelShader2;
     void* PSConstantBuffer;
 
     // Output (no blend ops or z buffer support yet)
@@ -124,7 +154,7 @@ private:
 
     SharedPipelineData SharedData;
     Microsoft::WRL::Wrappers::Event ShutdownEvent;
-    std::vector<std::unique_ptr<TRPipelineThread>> Threads;
+    std::vector<std::unique_ptr<TRPipelineThread2>> Threads;
 
     std::atomic_uint64_t LastCompletedFenceValue = 0;
     uint64_t CurrentFenceValue = 0;

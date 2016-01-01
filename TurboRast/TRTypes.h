@@ -1,6 +1,6 @@
 #pragma once
 
-#include "TurboRastMath.h"
+#include "TRMath.h"
 
 class TRVertexBuffer;
 class TRTexture2D;
@@ -15,6 +15,12 @@ struct Vertex
         : Position(pos), Color(color)
     {
     }
+};
+
+struct VertexOut
+{
+    float4 Position;    // SV_POSITION
+    float3 Color;       // COLOR
 };
 
 // Block of 4 restructured vertices, optimized for SSE processing together
@@ -118,7 +124,19 @@ struct alignas(16) vs_output
 };
 
 // Process 4 vertices at a time
-typedef vs_output (__vectorcall * pfnSSEVertexShader)(const void* const constantBuffer, const vs_input input);
+typedef vs_output(__vectorcall * pfnSSEVertexShader)(const void* const constantBuffer, const vs_input input);
 
 // Process 4 pixels at a time
-typedef vec4 (__vectorcall * pfnSSEPixelShader)(const void* const constantBuffer, const vs_output input);
+typedef vec4(__vectorcall * pfnSSEPixelShader)(const void* const constantBuffer, const vs_output input);
+
+// Process 1 vertices at a time
+typedef VertexOut (__vectorcall * pfnVertexShader)(const void* const constantBuffer, const Vertex& input);
+
+// Process 1 pixels at a time
+typedef float4 (__vectorcall * pfnPixelShader)(const void* const constantBuffer, const VertexOut& input);
+
+typedef void (*pfnStreamVertexShader)(
+    const void* const constantBuffer,
+    const void* const input,    // input stream
+    void* output,               // output stream
+    int64_t vertexCount);

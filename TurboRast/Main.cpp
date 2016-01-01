@@ -30,7 +30,10 @@ static ComPtr<ID3D11Texture2D> CPUBuffer[MaxFramesInFlight];
 
 static std::shared_ptr<TRDevice> TheDevice;
 static std::shared_ptr<TRVertexBuffer> VertBuffer;
+#pragma warning(push)
+#pragma warning(disable: 4592)
 static std::shared_ptr<TRTexture2D> RenderTargets[MaxFramesInFlight];
+#pragma warning(pop)
 
 struct SimpleConstants
 {
@@ -52,6 +55,11 @@ static bool DoFrame();
 
 static vs_output __vectorcall SimpleVertexShader(const void* const constants, const vs_input input);
 static vec4 __vectorcall SimplePixelShader(const void* const constants, const vs_output input);
+
+static VertexOut __vectorcall SimpleVertexShader2(const void* const constants, const Vertex& input);
+static float4 __vectorcall SimplePixelShader2(const void* const constants, const VertexOut& input);
+
+static void SimpleVertexShader3(const void* const constants, const void* const input, void* output, int64_t vertexCount);
 
 static LRESULT CALLBACK AppWinProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -300,7 +308,7 @@ bool AppStartup()
         }
     }
 #else
-    for (int i = 0; i < 18000; ++i)
+    for (int i = 0; i < 1; ++i)
     {
         vertices.push_back(Vertex(float3(-0.5f, -0.5f, 0.f), float3(0.f, 0.f, 1.f)));
         vertices.push_back(Vertex(float3(0.f, 0.5f, 0.f), float3(0.f, 1.f, 0.f)));
@@ -311,9 +319,32 @@ bool AppStartup()
     VertBuffer = std::make_shared<TRVertexBuffer>();
     VertBuffer->Update(vertices.data(), vertices.size());
 
+    std::vector<VertexAttributeDesc> layout(2);
+    layout[0].ByteOffset = 0;
+    layout[0].Type = VertexAttributeType::Float3;
+    layout[0].Semantic = "POSITION";
+    layout[1].ByteOffset = sizeof(float3);
+    layout[1].Type = VertexAttributeType::Float3;
+    layout[1].Semantic = "COLOR";
+
+    TheDevice->SetInputLayout(layout, sizeof(Vertex));
+
+    layout.resize(2);
+    layout[0].ByteOffset = 0;
+    layout[0].Type = VertexAttributeType::Float4;
+    layout[0].Semantic = "SV_POSITION";
+    layout[1].ByteOffset = sizeof(float4);
+    layout[1].Type = VertexAttributeType::Float3;
+    layout[1].Semantic = "COLOR";
+
+    TheDevice->SetVSOutputLayout(layout, sizeof(VertexOut));
+
     TheDevice->IASetVertexBuffer(VertBuffer);
     TheDevice->VSSetShader(SimpleVertexShader);
     TheDevice->PSSetShader(SimplePixelShader);
+    TheDevice->VSSetShader2(SimpleVertexShader2);
+    TheDevice->PSSetShader2(SimplePixelShader2);
+    TheDevice->VSSetShader3(SimpleVertexShader3);
     TheDevice->VSSetConstantBuffer(&ShaderConstants);
 
     XMStoreFloat4x4((XMFLOAT4X4*)&ShaderConstants.WorldMatrix, XMMatrixIdentity());
@@ -449,3 +480,43 @@ vec4 __vectorcall SimplePixelShader(const void* const constants, const vs_output
     UNREFERENCED_PARAMETER(constants);
     return vec4{ input.Color.x, input.Color.y, input.Color.z, _mm_set1_ps(1.f) };
 }
+
+
+VertexOut __vectorcall SimpleVertexShader2(const void* const constants, const Vertex& input)
+{
+    const SimpleConstants* const vsConstants = (const SimpleConstants* const)constants;
+
+    VertexOut output;
+
+    float4 pos = mul(vsConstants->WorldMatrix, float4(input.Position, 1.f));
+    output.Position = mul(vsConstants->ViewProjectionMatrix, pos);
+    output.Color = input.Color;
+
+    return output;
+}
+
+float4 __vectorcall SimplePixelShader2(const void* const constants, const VertexOut& input)
+{
+    UNREFERENCED_PARAMETER(constants);
+    return float4(input.Color, 1.f);
+}
+
+void SimpleVertexShader3(
+    const void* const constants,
+    const void* const input,
+    void* output,
+    int64_t vertexCount)
+{
+    const SimpleConstants* const vsConstants = (const SimpleConstants* const)constants;
+
+    const Vertex* const vertices = (const Vertex* const)input;
+    VertexOut* outputVertices = (VertexOut*)output;
+
+    for (int64_t i = 0; i < vertexCount; ++i)
+    {
+        float4 pos = mul(vsConstants->WorldMatrix, float4(vertices[i].Position, 1.f));
+        outputVertices[i].Position = mul(vsConstants->ViewProjectionMatrix, pos);
+        outputVertices[i].Color = vertices[i].Color;
+    }
+}
+

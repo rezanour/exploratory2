@@ -164,6 +164,11 @@ inline float2 operator* (const float2& v, float s)
     return float2(v.x * s, v.y * s);
 }
 
+inline float2 operator+ (const float2& v1, const float2& v2)
+{
+    return float2(v1.x + v2.x, v1.y + v2.y);
+}
+
 inline float3 operator+ (const float3& v1, const float3& v2)
 {
     return float3(v1.x + v2.x, v1.y + v2.y, v1.z + v2.z);

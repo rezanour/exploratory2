@@ -18,12 +18,6 @@
     <ClInclude Include="Precomp.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="TurboRastMath.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="TurboRastTypes.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="VertexBuffer.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -37,6 +31,15 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Texture2D.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PipelineThread2.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="TRMath.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="TRTypes.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -57,6 +60,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Device.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PipelineThread2.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

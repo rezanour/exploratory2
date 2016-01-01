@@ -1,6 +1,9 @@
 #include "Precomp.h"
 #include "Pipeline.h"
 #include "PipelineThread.h"
+#include "PipelineThread2.h"
+
+#pragma comment(lib, "winmm.lib")
 
 static int GetNumLogicalCores()
 {
@@ -28,10 +31,13 @@ static int GetNumLogicalCores()
 
 TRPipeline::TRPipeline()
 {
+    timeBeginPeriod(1);
 }
 
 TRPipeline::~TRPipeline()
 {
+    timeEndPeriod(1);
+
     std::vector<HANDLE> threadHandles;
     for (auto& thread : Threads)
     {
@@ -94,7 +100,11 @@ bool TRPipeline::Initialize()
 
     for (int i = 0; i < SharedData.NumThreads; ++i)
     {
+#if 0
         std::unique_ptr<TRPipelineThread> thread = std::make_unique<TRPipelineThread>(i, this, &SharedData);
+#else
+        std::unique_ptr<TRPipelineThread2> thread = std::make_unique<TRPipelineThread2>(i, this, &SharedData);
+#endif
         if (!thread->Initialize())
         {
             assert(false);
@@ -114,7 +124,7 @@ bool TRPipeline::Render(const std::shared_ptr<RenderCommand>& command)
     // current scratch address, so we need to stall until oustanding work
     // completes
     if ((command->NumVertices > SharedData.MaxVSOutputs) ||
-        (command->NumTriangles * 10 > SharedData.MaxTriangles)) // average of triangle being in 10 bins at once
+        (command->NumTriangles * 100 > SharedData.MaxTriangles)) // average of triangle being in 10 bins at once
     {
         FlushAndWait();
 
@@ -124,9 +134,9 @@ bool TRPipeline::Render(const std::shared_ptr<RenderCommand>& command)
             delete[] SharedData.VSOutputs;
             SharedData.VSOutputs = new SSEVSOutput[SharedData.MaxVSOutputs];
         }
-        if (command->NumTriangles * 10 > SharedData.MaxTriangles)
+        if (command->NumTriangles * 100 > SharedData.MaxTriangles)
         {
-            SharedData.MaxTriangles = command->NumTriangles * 10;
+            SharedData.MaxTriangles = command->NumTriangles * 100;
             delete[] SharedData.TriangleMemory;
             SharedData.TriangleMemory = new Triangle[SharedData.MaxTriangles];
         }

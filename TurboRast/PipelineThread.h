@@ -30,6 +30,7 @@ private:
 
     void ProcessOneTrianglePerThread(const std::shared_ptr<RenderCommand>& command);
     void ProcessOneTilePerThread(const std::shared_ptr<RenderCommand>& command);
+    void ProcessScreenTileDDAPerThread(const std::shared_ptr<RenderCommand>& command);
 
     void JoinAndDoSerialInitialization(const std::shared_ptr<RenderCommand>& command);
     void JoinAndDoSerialCompletion(const std::shared_ptr<RenderCommand>& command);
@@ -56,11 +57,17 @@ private:
         float4 v[3],                        // input position of each vertex
         uint32_t* renderTarget, int rtWidth, int rtHeight, int pitch);
 
+    // clip against plane equation given by normal n and dist d.
+    // a point p is outside of the plane if dot(p, n) - d > 0
+    int ClipTriangle(uint64_t iFirstVertex, float3 n, float d, float4 positions[3], float3 colors[3]);
+
 private:
     int ID;
     TRPipeline* Pipeline;
     SharedPipelineData* SharedData;
     Thread TheThread;
+
+    std::vector<SSEVSOutput> Triangles;
 
     Microsoft::WRL::Wrappers::CriticalSection CommandsLock;
     Microsoft::WRL::Wrappers::Event CommandReady;
