@@ -215,9 +215,9 @@ void TRPipelineThread2::ProcessVertices()
         int64_t i3 = iTriangle * 3 + 2;
 
         // Find 3 SV_POSITION values
-        float4* v1 = (float4*)(VertexMemory + i1 * OutputVertexStride + PositionOffset);
-        float4* v2 = (float4*)(VertexMemory + i2 * OutputVertexStride + PositionOffset);
-        float4* v3 = (float4*)(VertexMemory + i3 * OutputVertexStride + PositionOffset);
+        float4* v1 = GetVertexPosition<float4>(i1);
+        float4* v2 = GetVertexPosition<float4>(i2);
+        float4* v3 = GetVertexPosition<float4>(i3);
 
         int clipResult = PreClipTriangle(v1, v2, v3);
         if (clipResult == 0)
@@ -258,9 +258,9 @@ void TRPipelineThread2::ProcessVertices()
     for (int64_t i = 0; i < PipelineTriangleCount; ++i, ++triangle)
     {
         // Find 3 SV_POSITION values so that we can transform to render target coords
-        float4* v1 = (float4*)(VertexMemory + triangle->i1 * OutputVertexStride + PositionOffset);
-        float4* v2 = (float4*)(VertexMemory + triangle->i2 * OutputVertexStride + PositionOffset);
-        float4* v3 = (float4*)(VertexMemory + triangle->i3 * OutputVertexStride + PositionOffset);
+        float4* v1 = GetVertexPosition<float4>(triangle->i1);
+        float4* v2 = GetVertexPosition<float4>(triangle->i2);
+        float4* v3 = GetVertexPosition<float4>(triangle->i3);
 
         DDARastTriangle(v1, v2, v3, renderTarget, rtPitch);
     }
@@ -275,23 +275,41 @@ void TRPipelineThread2::ProcessVertices()
 
 int TRPipelineThread2::PreClipTriangle(const float4* v1, const float4* v2, const float4* v3)
 {
+#if 0
+    // trivial reject back-facing
+    float3 ab = *(const float3*)v2 - *(const float3*)v1;
+    float3 ac = *(const float3*)v3 - *(const float3*)v1;
+    float3 norm = cross(ab, ac);
+    if (dot(norm, float3(0, 0, -1)) <= 0)
+    {
+        return 1;
+    }
+#endif
+
+    // now check for completely outside any plane
     uint32_t mask1 = 0;
-    if (v1->x <= -1.f) mask1 |= 1;
-    if (v1->x >= 1.f) mask1 |= 2;
-    if (v1->y <= -1.f) mask1 |= 4;
-    if (v1->y >= 1.f) mask1 |= 8;
+    if (v1->x <= -1.f) mask1 |= 0x01;
+    if (v1->x >= 1.f) mask1 |= 0x02;
+    if (v1->y <= -1.f) mask1 |= 0x04;
+    if (v1->y >= 1.f) mask1 |= 0x08;
+    if (v1->z <= -1.f) mask1 |= 0x10;
+    if (v1->z >= 1.f) mask1 |= 0x20;
 
     uint32_t mask2 = 0;
-    if (v2->x <= -1.f) mask2 |= 1;
-    if (v2->x >= 1.f) mask2 |= 2;
-    if (v2->y <= -1.f) mask2 |= 4;
-    if (v2->y >= 1.f) mask2 |= 8;
+    if (v2->x <= -1.f) mask2 |= 0x01;
+    if (v2->x >= 1.f) mask2 |= 0x02;
+    if (v2->y <= -1.f) mask2 |= 0x04;
+    if (v2->y >= 1.f) mask2 |= 0x08;
+    if (v2->z <= -1.f) mask2 |= 0x10;
+    if (v2->z >= 1.f) mask2 |= 0x20;
 
     uint32_t mask3 = 0;
-    if (v3->x <= -1.f) mask3 |= 1;
-    if (v3->x >= 1.f) mask3 |= 2;
-    if (v3->y <= -1.f) mask3 |= 4;
-    if (v3->y >= 1.f) mask3 |= 8;
+    if (v3->x <= -1.f) mask3 |= 0x01;
+    if (v3->x >= 1.f) mask3 |= 0x02;
+    if (v3->y <= -1.f) mask3 |= 0x04;
+    if (v3->y >= 1.f) mask3 |= 0x08;
+    if (v3->z <= -1.f) mask3 |= 0x10;
+    if (v3->z >= 1.f) mask3 |= 0x20;
 
     // if all 3 vertices failed the same plane, then
     // we can trivially reject the entire triangle
@@ -334,17 +352,19 @@ void TRPipelineThread2::ClipTriangle(int64_t in_i1, int64_t in_i2, int64_t in_i3
         {
             int64_t i1 = indices[iRead][i];
             int64_t i2 = indices[iRead][(i + 1) % count];
-            float* v1 = (float*)(VertexMemory + i1 * OutputVertexStride + PositionOffset);
-            float* v2 = (float*)(VertexMemory + i2 * OutputVertexStride + PositionOffset);
+            float* v1 = GetVertexPosition<float>(i1);
+            float* v2 = GetVertexPosition<float>(i2);
             float d1 = -clipDist - v1[axis];
             float d2 = -clipDist - v2[axis];
             if (d1 < 0 && d2 < 0)
             {
+                assert(numIndices < _countof(indices[iWrite]));
                 // both inside, keep #2
                 indices[iWrite][numIndices++] = i2;
             }
             else if (d1 < 0 && d2 >= 0)
             {
+                assert(numIndices < _countof(indices[iWrite]));
                 // clip & keep clipped point
                 int64_t iClipped = ClipEdge(i1, i2, d1, d2);
                 indices[iWrite][numIndices++] = iClipped;
@@ -352,11 +372,12 @@ void TRPipelineThread2::ClipTriangle(int64_t in_i1, int64_t in_i2, int64_t in_i3
             else if (d1 >= 0 && d2 < 0)
             {
                 // clip & keep clipped + i2
+                assert(numIndices + 1 < _countof(indices[iWrite]));
                 int64_t iClipped = ClipEdge(i1, i2, d1, d2);
                 indices[iWrite][numIndices++] = iClipped;
                 indices[iWrite][numIndices++] = i2;
             }
-            else if (d2 >= 0 && d2 >= 0)
+            else if (d1 >= 0 && d2 >= 0)
             {
                 // both outside, don't keep anything
             }
@@ -372,29 +393,32 @@ void TRPipelineThread2::ClipTriangle(int64_t in_i1, int64_t in_i2, int64_t in_i3
         {
             int64_t i1 = indices[iRead][i];
             int64_t i2 = indices[iRead][(i + 1) % count];
-            float* v1 = (float*)(VertexMemory + i1 * OutputVertexStride + PositionOffset);
-            float* v2 = (float*)(VertexMemory + i2 * OutputVertexStride + PositionOffset);
+            float* v1 = GetVertexPosition<float>(i1);
+            float* v2 = GetVertexPosition<float>(i2);
             float d1 = v1[axis] - clipDist;
             float d2 = v2[axis] - clipDist;
             if (d1 < 0 && d2 < 0)
             {
+                assert(numIndices < _countof(indices[iWrite]));
                 // both inside, keep #2
                 indices[iWrite][numIndices++] = i2;
             }
             else if (d1 < 0 && d2 >= 0)
             {
+                assert(numIndices < _countof(indices[iWrite]));
                 // clip & keep clipped point
                 int64_t iClipped = ClipEdge(i1, i2, d1, d2);
                 indices[iWrite][numIndices++] = iClipped;
             }
             else if (d1 >= 0 && d2 < 0)
             {
+                assert(numIndices + 1 < _countof(indices[iWrite]));
                 // clip & keep clipped + i2
                 int64_t iClipped = ClipEdge(i1, i2, d1, d2);
                 indices[iWrite][numIndices++] = iClipped;
                 indices[iWrite][numIndices++] = i2;
             }
-            else if (d2 >= 0 && d2 >= 0)
+            else if (d1 >= 0 && d2 >= 0)
             {
                 // both outside, don't keep anything
             }
@@ -433,7 +457,7 @@ int64_t TRPipelineThread2::ClipEdge(int64_t i1, int64_t i2, float d1, float d2)
     // interpolate attributes
     for (auto& attr : CurrentCommand->OutputVertexLayout)
     {
-        // TODO: should avoid using switch here
+        // TODO: should avoid using switch here?
         switch (attr.Type)
         {
         case VertexAttributeType::Float:
@@ -482,6 +506,11 @@ void TRPipelineThread2::AppendTriangle(int64_t i1, int64_t i2, int64_t i3)
 {
     assert(PipelineTriangleCount + 1 < PipelineTriangleCapacity);
     PipelineTriangles[PipelineTriangleCount++] = { i1, i2, i3 };
+}
+
+static inline int rzround(float f)
+{
+    return (int)(f + 0.5f);
 }
 
 // rasterize a 2D triangle, binning the spans
@@ -533,15 +562,15 @@ void TRPipelineThread2::DDARastTriangle(const float4* v1, const float4* v2, cons
     int right = mid + bottom - left;
 
     // determine slope step for each side that we'll be walking down.
-    float step1 = (v[left].x - v[top].x) / (v[left].y - v[top].y);
-    float step2 = (v[right].x - v[top].x) / (v[right].y - v[top].y);
+    float step1 = (v[left].x - v[top].x) / (v[left].y - ytop);
+    float step2 = (v[right].x - v[top].x) / (v[right].y - ytop);
 
     // store starting x value for both sides. They start at same location.
     float x1 = v[top].x;
     float x2 = v[top].x;
 
-    int y1 = (int)ytop;
-    int y2 = (int)ymid;
+    int y1 = rzround(ytop);
+    int y2 = rzround(ymid);
 
     for (int y = y1; y < y2; ++y)
     {
@@ -549,31 +578,38 @@ void TRPipelineThread2::DDARastTriangle(const float4* v1, const float4* v2, cons
         span->x1 = x1;
         span->x2 = x2;
 
-        x1 += step1;
-        x2 += step2;
+        // only advance if we have another span,
+        // otherwise, we'll compute our new steps to take first
+        if (y < y2 - 1)
+        {
+            x1 += step1;
+            x2 += step2;
+        }
     }
 
     // next, we rasterize lower half of triangle from mid to bottom
-    left = (v[top].x < v[mid].x) ? top : mid;
-    right = top + mid - left;
-
-    step1 = (v[bottom].x - v[left].x) / (v[bottom].y - v[left].y);
-    step2 = (v[bottom].x - v[right].x) / (v[bottom].y - v[right].y);
-
-    // x1 and x2 are left at their current values, since we're continuing
-    // down the same triangle
-
-    y1 = (int)ymid;
-    y2 = (int)ybottom;
-
-    for (int y = y1; y < y2; ++y)
+    // unless there is no lower half :)
+    if (ymid + 0.001f < ybottom)
     {
-        rast_span* span = &spans[next_span++];
-        span->x1 = x1;
-        span->x2 = x2;
+        step1 = (v[bottom].x - x1) / (v[bottom].y - ymid);
+        step2 = (v[bottom].x - x2) / (v[bottom].y - ymid);
 
-        x1 += step1;
-        x2 += step2;
+        // x1 and x2 are left at their current values, since we're continuing
+        // down the same triangle
+
+        y1 = rzround(ymid);
+        y2 = rzround(ybottom);
+
+        for (int y = y1; y < y2; ++y)
+        {
+            // step first, then record
+            x1 += step1;
+            x2 += step2;
+
+            rast_span* span = &spans[next_span++];
+            span->x1 = x1;
+            span->x2 = x2;
+        }
     }
 
 #if 0
@@ -586,15 +622,15 @@ void TRPipelineThread2::DDARastTriangle(const float4* v1, const float4* v2, cons
     vec2 ac{ _mm_sub_ps(v3.Position.x, v1.Position.x),_mm_sub_ps(v3.Position.y, v1.Position.y) };
 #endif
 
-    int y = (int)ytop;
+    int y = rzround(ytop);
 
     rast_span* span = spans;
     for (; next_span > 0; --next_span, ++span)
     {
 #ifdef RENDER_WIREFRAME
 
-        renderTarget[y * pitch + (int)span->x1] = 0xFFFF0000;
-        renderTarget[y * pitch + (int)span->x2] = 0xFFFF0000;
+        renderTarget[y * pitch + rzround(span->x1)] = 0xFFFF0000;
+        renderTarget[y * pitch + rzround(span->x2)] = 0xFFFF0000;
 
 #else // RENDER_WIREFRAME
 
@@ -624,7 +660,7 @@ void TRPipelineThread2::DDARastTriangle(const float4* v1, const float4* v2, cons
             }
         }
 #else // ENABLE_LERPED_PATH
-        for (int x = (int)span->x1; x < (int)span->x2; ++x)
+        for (int x = rzround(span->x1); x < rzround(span->x2); ++x)
         {
             renderTarget[y * pitch + x] = 0xFFFF0000;
         }
@@ -634,3 +670,16 @@ void TRPipelineThread2::DDARastTriangle(const float4* v1, const float4* v2, cons
         ++y;
     }
 }
+
+template <typename T>
+inline T* TRPipelineThread2::GetVertexAttribute(int64_t i, int byteOffset)
+{
+    return (T*)(VertexMemory + byteOffset + (i * OutputVertexStride));
+}
+
+template <typename T>
+inline T* TRPipelineThread2::GetVertexPosition(int64_t i)
+{
+    return (T*)(VertexMemory + PositionOffset + (i * OutputVertexStride));
+}
+

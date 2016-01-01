@@ -46,6 +46,12 @@ private:
 
     void DDARastTriangle(const float4* v1, const float4* v2, const float4* v3, uint32_t* renderTarget, int pitch);
 
+    template <typename T>
+    inline T* GetVertexAttribute(int64_t i, int byteOffset);
+
+    template <typename T>
+    inline T* GetVertexPosition(int64_t i);
+
 private:
     int ID;
     TRPipeline* Pipeline;
