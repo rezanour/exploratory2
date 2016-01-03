@@ -31,6 +31,8 @@ static matrix4x4 CameraTransform;
 static raytracer_config TracerConfig;
 static std::vector<sphere_data> Spheres;
 static std::vector<triangle_data> Triangles;
+static std::vector<box_data> Boxes;
+static aabb_node* AabbTree;
 
 static bool WinStartup();
 static void WinShutdown();
@@ -306,6 +308,15 @@ bool AppStartup()
                 sphere.center[2] = z;
                 sphere.radius_squared = 0.25f * 0.25f;
                 Spheres.push_back(sphere);
+
+                box_data box;
+                box.min[0] = x - 0.125f;
+                box.min[1] = y - 0.125f;
+                box.min[2] = z - 0.125f;
+                box.max[0] = x + 0.125f;
+                box.max[1] = y + 0.125f;
+                box.max[2] = z + 0.125f;
+                Boxes.push_back(box);
             }
         }
     }
@@ -337,8 +348,19 @@ bool AppStartup()
         sphere.center[2] = 0.f;
         sphere.radius_squared = 0.5f * 0.5f;
         Spheres.push_back(sphere);
+
+        box_data box;
+        box.min[0] = -0.5f;
+        box.min[1] = -0.5f;
+        box.min[2] = -0.5f;
+        box.max[0] = 0.5f;
+        box.max[1] = 0.5f;
+        box.max[2] = 0.5f;
+        Boxes.push_back(box);
 }
 #endif
+
+    AabbTree = tt_build_aabb_tree(Triangles.data(), (int)Triangles.size());
 
     matrix4x4 world, viewProj;
     XMStoreFloat4x4((XMFLOAT4X4*)&world, XMMatrixIdentity());
@@ -374,11 +396,17 @@ bool DoFrame()
     TheDevice->Draw(Vertices.data(), (int64_t)Vertices.size(), CameraTransform);
 #else
 
-    float cameraPosition[] = { 5.f, 0.f, -10.f };
+    float cameraPosition[] = { 0.f, 0.f, -8.f };
     tt_setup(&TracerConfig, (uint32_t*)mapped.pData, OutputWidth, OutputHeight, mapped.RowPitch / sizeof(uint32_t),
         XMConvertToRadians(90.f), cameraPosition);
 
-    tt_trace(&TracerConfig, Spheres.data(), (int)Spheres.size(), Triangles.data(), 0);// (int)Triangles.size());
+    //tt_trace(&TracerConfig,
+    //    Spheres.data(), 0,//(int)Spheres.size(),
+    //    Triangles.data(), 0,// (int)Triangles.size());
+    //    Boxes.data(), (int)Boxes.size());
+
+    tt_trace(&TracerConfig, AabbTree);
+
 
 #endif
 

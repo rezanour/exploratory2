@@ -32,6 +32,9 @@ struct thread_work_item
     int sphere_count;
     const triangle_data* triangles;
     int triangle_count;
+    const box_data* boxes;
+    int box_count;
+    const aabb_node* scene;
     // block to work on
     int x, y;
     int width, height;
@@ -61,12 +64,17 @@ static test_result __vectorcall test_triangle(
     vec3 start, vec3 dir,
     __m128 v1, __m128 v2, __m128 v3, __m128 in_norm);
 
+static test_result __vectorcall test_box(
+    vec3 start, vec3 dir,
+    __m128 in_min, __m128 in_max);
+
 static void __vectorcall trace_rays(
     const raytracer_config* config,
     vec3 start, vec3 dir,
     __m128i output_x, __m128i output_y,
     const sphere_data* spheres, int sphere_count,
-    const triangle_data* triangles, int triangle_count);
+    const triangle_data* triangles, int triangle_count,
+    const box_data* boxes, int box_count);
 
 static __forceinline uint32_t compute_color(const float norm[3]);
 
@@ -84,6 +92,13 @@ static void cull_triangles(
     const triangle_data* triangles, int triangle_count);
 
 static void mt_init();
+
+static void __vectorcall trace_rays(
+    const raytracer_config* config,
+    vec3 start, vec3 dir,
+    __m128i output_x, __m128i output_y,
+    const aabb_node* scene);
+
 
 // Results after culling pass
 // TODO: needs to be thread local?
@@ -143,12 +158,14 @@ void __stdcall tt_setup(
 void __stdcall tt_trace(
     const raytracer_config* config,
     const sphere_data* spheres, int sphere_count,
-    const triangle_data* triangles, int triangle_count)
+    const triangle_data* triangles, int triangle_count,
+    const box_data* boxes, int box_count)
 {
     assert(config);
     assert(spheres || sphere_count <= 0);
     assert(triangles || triangle_count <= 0);
-    if (sphere_count <= 0 && triangle_count <= 0)
+    assert(boxes || box_count <= 0);
+    if (sphere_count <= 0 && triangle_count <= 0 && box_count <= 0)
     {
         return;
     }
@@ -176,6 +193,7 @@ void __stdcall tt_trace(
         work_items[i].sphere_count = sphere_count;
         work_items[i].triangles = triangles;
         work_items[i].triangle_count = triangle_count;
+        work_items[i].scene = nullptr;
     }
 
     current_work_item = 0;
@@ -224,7 +242,8 @@ void __stdcall tt_trace(
                 start, dir,
                 output_x, output_y,
                 spheres, sphere_count,
-                triangles, triangle_count);
+                triangles, triangle_count,
+                boxes, box_count);
 #endif // CULL_ENABLED
         }
     }
@@ -409,13 +428,115 @@ test_result __vectorcall test_triangle(
     return result;
 }
 
+test_result __vectorcall test_box(
+    vec3 start, vec3 dir, 
+    __m128 in_min, __m128 in_max)
+{
+    vec3 min = expand(in_min);
+    vec3 max = expand(in_max);
+
+    test_result result;
+    result.hit = _mm_setzero_ps();
+    result.dist = _mm_set1_ps(FLT_MAX);
+
+    __m128 zero = _mm_setzero_ps();
+
+    vec3 dist1 = sub(min, start);
+    vec3 dist2 = sub(start, max);
+
+    // enter from -x
+    __m128 mask = _mm_and_ps(_mm_cmpgt_ps(dist1.x, zero), _mm_cmpgt_ps(dir.x, zero));
+    __m128 r = _mm_div_ps(dist1.x, dir.x);
+    vec3 point;
+    point.y = _mm_add_ps(start.y, _mm_mul_ps(dir.y, r));
+    point.z = _mm_add_ps(start.z, _mm_mul_ps(dir.z, r));
+    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.y, min.y));
+    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.y, max.y));
+    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.z, min.z));
+    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.z, max.z));
+    result.hit = _mm_or_ps(result.hit, mask);
+    result.dist = r;
+
+    // enter from +x
+    mask = _mm_and_ps(_mm_cmpgt_ps(dist2.x, zero), _mm_cmplt_ps(dir.x, zero));
+    r = _mm_div_ps(dist2.x, _mm_sub_ps(zero, dir.x));
+    point.y = _mm_add_ps(start.y, _mm_mul_ps(dir.y, r));
+    point.z = _mm_add_ps(start.z, _mm_mul_ps(dir.z, r));
+    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.y, min.y));
+    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.y, max.y));
+    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.z, min.z));
+    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.z, max.z));
+    result.hit = _mm_or_ps(result.hit, mask);
+    __m128 comp = _mm_cmplt_ps(r, result.dist);
+    mask = _mm_and_ps(mask, comp);
+    result.dist = _mm_or_ps(_mm_and_ps(mask, r), _mm_andnot_ps(mask, result.dist));
+
+    // enter from -y
+    mask = _mm_and_ps(_mm_cmpgt_ps(dist1.y, zero), _mm_cmpgt_ps(dir.y, zero));
+    r = _mm_div_ps(dist1.y, dir.y);
+    point.x = _mm_add_ps(start.x, _mm_mul_ps(dir.x, r));
+    point.z = _mm_add_ps(start.z, _mm_mul_ps(dir.z, r));
+    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.x, min.x));
+    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.x, max.x));
+    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.z, min.z));
+    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.z, max.z));
+    result.hit = _mm_or_ps(result.hit, mask);
+    comp = _mm_cmplt_ps(r, result.dist);
+    mask = _mm_and_ps(mask, comp);
+    result.dist = _mm_or_ps(_mm_and_ps(mask, r), _mm_andnot_ps(mask, result.dist));
+
+    // enter from +y
+    mask = _mm_and_ps(_mm_cmpgt_ps(dist2.y, zero), _mm_cmplt_ps(dir.y, zero));
+    r = _mm_div_ps(dist2.y, _mm_sub_ps(zero, dir.y));
+    point.x = _mm_add_ps(start.x, _mm_mul_ps(dir.x, r));
+    point.z = _mm_add_ps(start.z, _mm_mul_ps(dir.z, r));
+    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.x, min.x));
+    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.x, max.x));
+    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.z, min.z));
+    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.z, max.z));
+    result.hit = _mm_or_ps(result.hit, mask);
+    comp = _mm_cmplt_ps(r, result.dist);
+    mask = _mm_and_ps(mask, comp);
+    result.dist = _mm_or_ps(_mm_and_ps(mask, r), _mm_andnot_ps(mask, result.dist));
+
+    // enter from -z
+    mask = _mm_and_ps(_mm_cmpgt_ps(dist1.z, zero), _mm_cmpgt_ps(dir.z, zero));
+    r = _mm_div_ps(dist1.z, dir.z);
+    point.x = _mm_add_ps(start.x, _mm_mul_ps(dir.x, r));
+    point.y = _mm_add_ps(start.y, _mm_mul_ps(dir.y, r));
+    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.x, min.x));
+    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.x, max.x));
+    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.y, min.y));
+    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.y, max.y));
+    result.hit = _mm_or_ps(result.hit, mask);
+    comp = _mm_cmplt_ps(r, result.dist);
+    mask = _mm_and_ps(mask, comp);
+    result.dist = _mm_or_ps(_mm_and_ps(mask, r), _mm_andnot_ps(mask, result.dist));
+
+    // enter from +z
+    mask = _mm_and_ps(_mm_cmpgt_ps(dist2.z, zero), _mm_cmplt_ps(dir.z, zero));
+    r = _mm_div_ps(dist2.z, _mm_sub_ps(zero, dir.z));
+    point.x = _mm_add_ps(start.x, _mm_mul_ps(dir.x, r));
+    point.y = _mm_add_ps(start.y, _mm_mul_ps(dir.y, r));
+    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.x, min.x));
+    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.x, max.x));
+    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.y, min.y));
+    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.y, max.y));
+    result.hit = _mm_or_ps(result.hit, mask);
+    comp = _mm_cmplt_ps(r, result.dist);
+    mask = _mm_and_ps(mask, comp);
+    result.dist = _mm_or_ps(_mm_and_ps(mask, r), _mm_andnot_ps(mask, result.dist));
+
+    return result;
+}
 
 void __vectorcall trace_rays(
     const raytracer_config* config,
     vec3 start, vec3 dir,
     __m128i output_x, __m128i output_y,
     const sphere_data* spheres, int sphere_count,
-    const triangle_data* triangles, int triangle_count)
+    const triangle_data* triangles, int triangle_count,
+    const box_data* boxes, int box_count)
 {
     __m128 hit = _mm_setzero_ps();
     __m128 nearest = _mm_set1_ps(1000.f);
@@ -499,6 +620,48 @@ void __vectorcall trace_rays(
         hit = _mm_or_ps(result.hit, hit);
     }
 
+    type = _mm_set1_epi32(2); // box
+    for (int i = 0; i < box_count; ++i)
+    {
+        __m128i index = _mm_set1_epi32(i);
+        const box_data* box = boxes + i;
+
+        __m128 min = _mm_load_ps(box->min);
+        __m128 max = _mm_load_ps(box->max);
+
+        // TODO: evaluate: _mm_prefetch((const char*)(triangles + i + 1), _MM_HINT_T0);
+
+        test_result result = test_box(start, dir, min, max);
+
+        // check if any of the dists were less than the previous nearest.
+        // combine that with the hit mask though, so we ignore results that
+        // didn't hit.
+        __m128 mask = _mm_cmplt_ps(result.dist, nearest);
+        mask = _mm_and_ps(result.hit, mask);
+
+        __m128i imask = _mm_castps_si128(mask);
+
+        // now keep the old nearests for items that didn't pass the combined mask,
+        // and add in the new nearests for the elements that did pass the mask
+        nearest =
+            _mm_or_ps(
+                _mm_and_ps(mask, result.dist),
+                _mm_andnot_ps(mask, nearest));
+
+        nearest_index =
+            _mm_or_si128(
+                _mm_and_si128(imask, index),
+                _mm_andnot_si128(imask, nearest_index));
+
+        nearest_type =
+            _mm_or_si128(
+                _mm_and_si128(imask, type),
+                _mm_andnot_si128(imask, nearest_type));
+
+        // update our overall hit bit
+        hit = _mm_or_ps(result.hit, hit);
+    }
+
     vec3 point;
     point.x = _mm_add_ps(start.x, _mm_mul_ps(dir.x, nearest));
     point.y = _mm_add_ps(start.y, _mm_mul_ps(dir.y, nearest));
@@ -525,6 +688,7 @@ void __vectorcall trace_rays(
         if (hit_mask & 0x01)
         {
             float norm[3];
+            bool skip = false;
                 
             // if it was a sphere that was hit, compute normal
             if (nearest_t[bit] == 0)
@@ -539,7 +703,7 @@ void __vectorcall trace_rays(
 
                 normalize(norm);
             }
-            else
+            else if (nearest_t[bit] == 1)
             {
                 // triangle, just read the normal
                 const triangle_data* triangle = triangles + nearest_i[bit];
@@ -547,10 +711,20 @@ void __vectorcall trace_rays(
                 norm[1] = triangle->normal[1];
                 norm[2] = triangle->normal[2];
             }
+            else
+            {
+                // box, just use temp one for now
+                int output_index = y[bit] * config->render_target_pitch + x[bit];
+                config->render_target[output_index] = 0xFFFF0000;
+                skip = true;
+            }
 
-            // rasterize this ray
-            int output_index = y[bit] * config->render_target_pitch + x[bit];
-            config->render_target[output_index] = compute_color(norm);
+            if (!skip)
+            {
+                // rasterize this ray
+                int output_index = y[bit] * config->render_target_pitch + x[bit];
+                config->render_target[output_index] = compute_color(norm);
+            }
         }
         hit_mask >>= 1;
     }
@@ -767,19 +941,30 @@ DWORD CALLBACK thread_proc(void* context)
 
                     dir = normalize(dir);
 
+                    if (work->scene)
+                    {
+                        trace_rays(work->config,
+                            start, dir,
+                            output_x, output_y,
+                            work->scene);
+                    }
+                    else
+                    {
 #ifdef CULL_ENABLED
-                    trace_rays(work->config,
-                        start, dir,
-                        output_x, output_y,
-                        final_spheres, final_sphere_count,
-                        final_triangles, final_triangle_count);
+                        trace_rays(work->config,
+                            start, dir,
+                            output_x, output_y,
+                            final_spheres, final_sphere_count,
+                            final_triangles, final_triangle_count);
 #else
-                    trace_rays(work->config,
-                        start, dir,
-                        output_x, output_y,
-                        work->spheres, work->sphere_count,
-                        work->triangles, work->triangle_count);
+                        trace_rays(work->config,
+                            start, dir,
+                            output_x, output_y,
+                            work->spheres, work->sphere_count,
+                            work->triangles, work->triangle_count,
+                            work->boxes, work->box_count);
 #endif
+                    }
                 }
             }
 
@@ -797,5 +982,351 @@ DWORD CALLBACK thread_proc(void* context)
     }
 
     return 0;
+}
+
+bool test_box(const float start[3], const float dir[3], const float min[3], const float max[3], float* out_dist)
+{
+    // for each axis, see if we enter the box
+    float point[3];
+    float nearest = FLT_MAX;
+    bool hit = false;
+    for (int i = 0; i < 3; ++i)
+    {
+        float dist = min[i] - start[i];
+        if (dist > 0 && dir[i] > 0)
+        {
+            float r = dist / dir[i];
+            point[0] = start[0] + dir[0] * r;
+            point[1] = start[1] + dir[1] * r;
+            point[2] = start[2] + dir[2] * r;
+
+            // check other axes
+            for (int j = 0; j < 3; ++j)
+            {
+                if (i == j) continue;
+                if (point[j] > min[j] && point[j] < max[j])
+                {
+                    // hit
+                    hit = true;
+                    if (r < nearest)
+                    {
+                        nearest = r;
+                    }
+                }
+            }
+        }
+
+        dist = start[i] - max[i];
+        if (dist > 0 && dir[i] < 0)
+        {
+            float r = dist / -dir[i];
+            point[0] = start[0] + dir[0] * r;
+            point[1] = start[1] + dir[1] * r;
+            point[2] = start[2] + dir[2] * r;
+
+            // check other axes
+            for (int j = 0; j < 3; ++j)
+            {
+                if (i == j) continue;
+                if (point[j] > min[j] && point[j] < max[j])
+                {
+                    // hit
+                    hit = true;
+                    if (r < nearest)
+                    {
+                        nearest = r;
+                    }
+                }
+            }
+        }
+    }
+
+    *out_dist = nearest;
+    return hit;
+}
+
+static void get_aabb(const triangle_data* triangle, float min[3], float max[3])
+{
+    for (int i = 0; i < 3; ++i)
+    {
+        min[i] = std::min(triangle->v1[i], std::min(triangle->v2[i], triangle->v3[i]));
+        max[i] = std::max(triangle->v1[i], std::max(triangle->v2[i], triangle->v3[i]));
+    }
+}
+
+static float get_growth_volume(
+    const float min[3], const float max[3],
+    const triangle_data* triangle)
+{
+    float growth[3];
+    for (int i = 0; i < 3; ++i)
+    {
+        growth[i] = std::max(0.f, min[i] - std::min(triangle->v1[i], std::min(triangle->v2[i], triangle->v3[i])));
+        growth[i] += std::max(0.f, std::max(triangle->v1[i], std::max(triangle->v2[i], triangle->v3[i])) - max[i]);
+    }
+    return growth[0] * growth[1] * growth[2];
+}
+
+static aabb_node* insert_triangle(
+    aabb_node* node, const triangle_data* triangle)
+{
+    if (!node)
+    {
+        aabb_node* new_node = new aabb_node;
+        new_node->children[0] = nullptr;
+        new_node->triangles[0] = *triangle;
+        new_node->num_triangles = 1;
+        get_aabb(triangle, new_node->min, new_node->max);
+        return new_node;
+    }
+    else if (node->children[0] == nullptr)
+    {
+        // leaf, does it have room?
+        if (node->num_triangles < _countof(node->triangles))
+        {
+            node->triangles[node->num_triangles++] = *triangle;
+            float min[3], max[3];
+            get_aabb(triangle, min, max);
+            for (int i = 0; i < 3; ++i)
+            {
+                node->min[i] = std::min(node->min[i], min[i]);
+                node->max[i] = std::max(node->max[i], max[i]);
+            }
+
+            return node;
+        }
+        
+        // no? split it
+        aabb_node* new_leaf = new aabb_node;
+        new_leaf->children[0] = nullptr;
+        new_leaf->triangles[0] = *triangle;
+        new_leaf->num_triangles = 1;
+        get_aabb(triangle, new_leaf->min, new_leaf->max);
+
+        aabb_node* new_inner = new aabb_node;
+        new_inner->children[0] = node;
+        new_inner->children[1] = new_leaf;
+        for (int i = 0; i < 3; ++i)
+        {
+            new_inner->min[i] = std::min(node->min[i], new_leaf->min[i]);
+            new_inner->max[i] = std::max(node->max[i], new_leaf->max[i]);
+        }
+        return new_inner;
+    }
+    else
+    {
+        // inner node, whichever child grows least
+        if (get_growth_volume(node->children[0]->min, node->children[0]->max, triangle)
+            < get_growth_volume(node->children[1]->min, node->children[1]->max, triangle))
+        {
+            node->children[0] = insert_triangle(node->children[0], triangle);
+        }
+        else
+        {
+            node->children[1] = insert_triangle(node->children[1], triangle);
+        }
+
+        for (int i = 0; i < 3; ++i)
+        {
+            node->min[i] = std::min(node->children[0]->min[i], node->children[1]->min[i]);
+            node->max[i] = std::max(node->children[0]->max[i], node->children[1]->max[i]);
+        }
+        return node;
+    }
+}
+
+aabb_node* __stdcall tt_build_aabb_tree(
+    const triangle_data* triangles, int triangle_count)
+{
+    aabb_node* root = nullptr;
+    for (int i = 0; i < triangle_count; ++i)
+    {
+        root = insert_triangle(root, &triangles[i]);
+    }
+    return root;
+}
+
+
+static void __vectorcall trace_rays(
+    const raytracer_config* config,
+    vec3 start, vec3 dir,
+    __m128i output_x, __m128i output_y,
+    const aabb_node* scene);
+
+void __stdcall tt_trace(
+    const raytracer_config* config,
+    const aabb_node* scene)
+{
+    assert(config && scene);
+
+#ifdef MT_ENABLED
+
+    // divide rt into 4x4
+    int width = (config->render_target_width + 3) / 4;
+    int height = (config->render_target_height + 3) / 4;
+    // ensure they are even (since we do 2x2s)
+    if (width % 2 != 0) ++width;
+    if (height % 2 != 0) ++height;
+    for (int i = 0; i < 16; ++i)
+    {
+        work_items[i].config = config;
+        work_items[i].x = (i % 4) * width;
+        work_items[i].y = (i / 4) * height;
+        work_items[i].width = width;
+        work_items[i].height = height;
+        work_items[i].spheres = nullptr;
+        work_items[i].sphere_count = 0;
+        work_items[i].triangles = nullptr;
+        work_items[i].triangle_count = 0;
+        work_items[i].scene = scene;
+    }
+
+    current_work_item = 0;
+    work_complete_gate = 0;
+    for (int i = 0; i < num_threads; ++i)
+    {
+        SetEvent(thread_contexts[i].work_event);
+    }
+
+    WaitForSingleObject(complete_event, INFINITE);
+
+#else
+    // process in 2x2 blocks of rays
+    for (int y = 0; y < config->render_target_height; y += 2)
+    {
+        __m128i output_y = _mm_set_epi32(y + 1, y + 1, y, y);
+
+        for (int x = 0; x < config->render_target_width; x += 2)
+        {
+            __m128i output_x = _mm_set_epi32(x + 1, x, x + 1, x);
+
+            vec3 start, dir;
+
+            // TODO: don't support view_forward/up yet
+            start.x = _mm_set1_ps(config->view_position[0]);
+            start.y = _mm_set1_ps(config->view_position[1]);
+            start.z = _mm_set1_ps(config->view_position[2]);
+
+            float base_x = x - config->half_render_target_width;
+            float base_y = config->half_render_target_height - y;
+
+            dir.x = _mm_set_ps(base_x + 1, base_x, base_x + 1, base_x);
+            dir.y = _mm_set_ps(base_y - 1, base_y - 1, base_y, base_y);
+            dir.z = _mm_set1_ps(config->dist_to_plane);
+
+            dir = normalize(dir);
+
+            trace_rays(config,
+                start, dir,
+                output_x, output_y,
+                scene);
+        }
+    }
+#endif // MT_ENABLED
+}
+
+static test_result __vectorcall test_node(vec3 start, vec3 dir, const aabb_node* node)
+{
+    test_result total;
+    total.hit = _mm_setzero_ps();
+    total.dist = _mm_set1_ps(FLT_MAX);
+
+    if (node->children[0] == nullptr)
+    {
+        // leaf, process triangles
+        for (int i = 0; i < node->num_triangles; ++i)
+        {
+            const triangle_data* triangle = node->triangles + i;
+
+            __m128 v1 = _mm_load_ps(triangle->v1);
+            __m128 v2 = _mm_load_ps(triangle->v2);
+            __m128 v3 = _mm_load_ps(triangle->v3);
+            __m128 norm = _mm_load_ps(triangle->normal);
+
+            test_result result = test_triangle(start, dir, v1, v2, v3, norm);
+
+            // check if any of the dists were less than the previous nearest.
+            // combine that with the hit mask though, so we ignore results that
+            // didn't hit.
+            __m128 mask = _mm_cmplt_ps(result.dist, total.dist);
+            mask = _mm_and_ps(result.hit, mask);
+
+            // now keep the old nearests for items that didn't pass the combined mask,
+            // and add in the new nearests for the elements that did pass the mask
+            total.dist =
+                _mm_or_ps(
+                    _mm_and_ps(mask, result.dist),
+                    _mm_andnot_ps(mask, total.dist));
+
+            // update our overall hit bit
+            total.hit = _mm_or_ps(result.hit, total.hit);
+        }
+    }
+    else
+    {
+        // inner node. check any child that the ray hits
+        __m128 min1 = _mm_load_ps(node->children[0]->min);
+        __m128 max1 = _mm_load_ps(node->children[0]->max);
+        test_result res1 = test_box(start, dir, min1, max1);
+        int mask1 = _mm_movemask_ps(res1.hit);
+        if (mask1)
+        {
+            res1 = test_node(start, dir, node->children[0]);
+        }
+
+        __m128 min2 = _mm_load_ps(node->children[1]->min);
+        __m128 max2 = _mm_load_ps(node->children[1]->max);
+        test_result res2 = test_box(start, dir, min2, max2);
+        int mask2 = _mm_movemask_ps(res2.hit);
+        if (mask2)
+        {
+            res2 = test_node(start, dir, node->children[1]);
+        }
+
+        __m128 mask = _mm_cmplt_ps(res1.dist, total.dist);
+        mask = _mm_and_ps(res1.hit, mask);
+        total.dist =
+            _mm_or_ps(
+                _mm_and_ps(mask, res1.dist),
+                _mm_andnot_ps(mask, total.dist));
+
+        mask = _mm_cmplt_ps(res2.dist, total.dist);
+        mask = _mm_and_ps(res2.hit, mask);
+        total.dist =
+            _mm_or_ps(
+                _mm_and_ps(mask, res2.dist),
+                _mm_andnot_ps(mask, total.dist));
+
+        // update our overall hit bit
+        total.hit = _mm_or_ps(res1.hit, total.hit);
+        total.hit = _mm_or_ps(res2.hit, total.hit);
+    }
+
+    return total;
+}
+
+void __vectorcall trace_rays(
+    const raytracer_config* config,
+    vec3 start, vec3 dir,
+    __m128i output_x, __m128i output_y,
+    const aabb_node* scene)
+{
+    test_result result = test_node(start, dir, scene);
+
+    int x[4], y[4];
+    _mm_storeu_si128((__m128i*)x, output_x);
+    _mm_storeu_si128((__m128i*)y, output_y);
+
+    int hit_mask = _mm_movemask_ps(result.hit);
+    for (int bit = 0; bit < 4; ++bit)
+    {
+        if (hit_mask & 0x01)
+        {
+            // box, just use temp one for now
+            int output_index = y[bit] * config->render_target_pitch + x[bit];
+            config->render_target[output_index] = 0xFFFF0000;
+        }
+        hit_mask >>= 1;
+    }
 }
 

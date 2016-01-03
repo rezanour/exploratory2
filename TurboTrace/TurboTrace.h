@@ -16,6 +16,22 @@ struct alignas(16) triangle_data
     float normal[3]; float pad4;
 };
 
+struct alignas(16) box_data
+{
+    float min[3]; float pad1;
+    float max[3]; float pad2;
+};
+
+struct alignas(16) aabb_node
+{
+    float min[3]; float pad1;
+    float max[3]; float pad2;
+
+    aabb_node* children[2];
+    triangle_data triangles[32];
+    int num_triangles;
+};
+
 struct raytracer_config
 {
     // render target info
@@ -33,6 +49,9 @@ struct raytracer_config
     float view_up[3];
 };
 
+aabb_node* __stdcall tt_build_aabb_tree(
+    const triangle_data* triangles, int triangle_count);
+
 void __stdcall tt_setup(
     raytracer_config* config,
     uint32_t* render_target, int width, int height, int pitch,
@@ -41,4 +60,9 @@ void __stdcall tt_setup(
 void __stdcall tt_trace(
     const raytracer_config* config,
     const sphere_data* spheres, int sphere_count,
-    const triangle_data* triangles, int triangle_count);
+    const triangle_data* triangles, int triangle_count,
+    const box_data* boxes, int box_count);
+
+void __stdcall tt_trace(
+    const raytracer_config* config,
+    const aabb_node* scene);
