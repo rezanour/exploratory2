@@ -140,3 +140,5 @@ typedef void (*pfnStreamVertexShader)(
     const void* const input,    // input stream
     void* output,               // output stream
     int64_t vertexCount);
+
+typedef float4(__vectorcall * pfnPixelShader3)(const void* const constantBuffer, const uint8_t* input);

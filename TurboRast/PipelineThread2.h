@@ -27,15 +27,14 @@ private:
 
     void ProcessVertices();
 
-    struct PipelineTriangle
+    enum class PreClipResult
     {
-        int64_t i1, i2, i3;
+        TrivialAccept,
+        TrivialReject,
+        NeedsClipping
     };
 
-    // returns 1 if the entire triangle can be trivially rejected.
-    // returns 2 if the entier triangle can be trivially accepted.
-    // returns 0 if further clipping is needed
-    int PreClipTriangle(const float4* v1, const float4* v2, const float4* v3);
+    PreClipResult PreClipTriangle(const float4* v1, const float4* v2, const float4* v3);
 
     // clips the triangle against the viewport edges and appends the results
     // to the PipelineTriangle list
@@ -44,13 +43,25 @@ private:
 
     void AppendTriangle(int64_t i1, int64_t i2, int64_t i3);
 
-    void DDARastTriangle(const float4* v1, const float4* v2, const float4* v3, uint32_t* renderTarget, int pitch);
+    void DDARastTriangle(const float4* v1, const float4* v2, const float4* v3);
 
     template <typename T>
     inline T* GetVertexAttribute(int64_t i, int byteOffset);
 
     template <typename T>
     inline T* GetVertexPosition(int64_t i);
+
+    // Compute barycentric coordinates (lerp weights) for 4 samples at once.
+    // The computation is done in 2 dimensions (screen space).
+    __forceinline bary_result __vectorcall ComputeBarycentricCoords(
+        const vec2 a, const vec2 b,                     // first 2 vertices in vectorized form
+        const vec2 ab, const vec2 bc, const vec2 ac,    // edges of triangle, in vectorized form
+        const vec2 p);                                  // 4 pixels to compute lerp values for
+
+    __forceinline void Lerp(
+        uint8_t* v1, uint8_t* v2, uint8_t* v3,          // triangle vertex (top of each vertex struct)
+        float w1, float w2, float w3,                   // lerping weights
+        uint8_t* output);                               // scratch memory to write lerped values to
 
 private:
     int ID;
@@ -66,10 +77,19 @@ private:
     // and output vertex stride
     int64_t PositionOffset = 0;
     int64_t OutputVertexStride = 0;
+    uint32_t* RenderTarget = nullptr;
+    int RTWidth = 0;
+    int RTHeight = 0;
+    int RTPitch = 0;
 
     uint8_t* VertexMemory = nullptr;
     int64_t VertexMemoryOffset = 0;
     int64_t VertexMemoryCapacity = 0;
+
+    struct PipelineTriangle
+    {
+        int64_t i1, i2, i3;
+    };
 
     PipelineTriangle* PipelineTriangles = nullptr;
     int64_t PipelineTriangleCount = 0;

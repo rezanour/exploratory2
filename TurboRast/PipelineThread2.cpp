@@ -104,6 +104,11 @@ void TRPipelineThread2::ThreadProc()
             }
             assert(PositionOffset >= 0);
 
+            RenderTarget = (uint32_t*)CurrentCommand->RenderTarget->GetData();
+            RTWidth = CurrentCommand->RenderTarget->GetWidth();
+            RTHeight = CurrentCommand->RenderTarget->GetHeight();
+            RTPitch = CurrentCommand->RenderTarget->GetPitchInPixels();
+
             // This vertex processing step includes:
             //   1. transform vertex (run vertex shader)
             //   2. triangle setup:
@@ -214,31 +219,13 @@ void TRPipelineThread2::ProcessVertices()
         int64_t i2 = iTriangle * 3 + 1;
         int64_t i3 = iTriangle * 3 + 2;
 
-        // Find 3 SV_POSITION values
-        float4* v1 = GetVertexPosition<float4>(i1);
-        float4* v2 = GetVertexPosition<float4>(i2);
-        float4* v3 = GetVertexPosition<float4>(i3);
-
-        int clipResult = PreClipTriangle(v1, v2, v3);
-        if (clipResult == 0)
-        {
-            // Clip against viewport edges (appends resulting triangles to PipelineTriangles list)
-            ClipTriangle(i1, i2, i3);
-        }
-        else if (clipResult == 1)
-        {
-            // trivial reject
-        }
-        else if (clipResult == 2)
-        {
-            // trivial accept
-            AppendTriangle(i1, i2, i3);
-        }
+        // Appends to the pipeline triangle list
+        ClipTriangle(i1, i2, i3);
     }
 
     // Transform to render target coordinates
-    float rtWidth = (float)CurrentCommand->RenderTarget->GetWidth();
-    float rtHeight = (float)CurrentCommand->RenderTarget->GetHeight();
+    float rtWidth = (float)RTWidth;
+    float rtHeight = (float)RTHeight;
     vertexCount = VertexMemoryOffset / OutputVertexStride;
     pVert = VertexMemory + PositionOffset;
     for (int64_t i = 0; i < vertexCount; ++i, pVert += OutputVertexStride)
@@ -250,10 +237,12 @@ void TRPipelineThread2::ProcessVertices()
         v->y = (1.f - (v->y * 0.5f + 0.5f)) * rtHeight;
     }
 
-    // TEMP: Rasterize
-    uint32_t* renderTarget = (uint32_t*)CurrentCommand->RenderTarget->GetData();
-    int rtPitch = CurrentCommand->RenderTarget->GetPitchInPixels();
-
+    // Rasterize
+    // TODO: Since rasterization is an expensive operation, and the final triangle and
+    // resulting pixel load per thread may be wildly uneven, it's probably better to bin
+    // these triangles into a large shared list, and then have each thread pull & rasterize
+    // from that list. Or, alternatively, we could bin the triangles into screen tiles (before clipping)
+    // and then the threads process the tiles in parallel.
     PipelineTriangle* triangle = PipelineTriangles;
     for (int64_t i = 0; i < PipelineTriangleCount; ++i, ++triangle)
     {
@@ -262,7 +251,7 @@ void TRPipelineThread2::ProcessVertices()
         float4* v2 = GetVertexPosition<float4>(triangle->i2);
         float4* v3 = GetVertexPosition<float4>(triangle->i3);
 
-        DDARastTriangle(v1, v2, v3, renderTarget, rtPitch);
+        DDARastTriangle(v1, v2, v3);
     }
 
     if (SharedData->StatsEnabled)
@@ -273,7 +262,7 @@ void TRPipelineThread2::ProcessVertices()
     }
 }
 
-int TRPipelineThread2::PreClipTriangle(const float4* v1, const float4* v2, const float4* v3)
+TRPipelineThread2::PreClipResult TRPipelineThread2::PreClipTriangle(const float4* v1, const float4* v2, const float4* v3)
 {
 #if 0
     // trivial reject back-facing
@@ -311,27 +300,49 @@ int TRPipelineThread2::PreClipTriangle(const float4* v1, const float4* v2, const
     if (v3->z <= -1.f) mask3 |= 0x10;
     if (v3->z >= 1.f) mask3 |= 0x20;
 
-    // if all 3 vertices failed the same plane, then
-    // we can trivially reject the entire triangle
     if ((mask1 & mask2 & mask3) != 0)
     {
-        // trivial reject
-        return 1;
+        // if all 3 vertices failed the same plane, then
+        // we can trivially reject the entire triangle
+        return PreClipResult::TrivialReject;
     }
     else if ((mask1 | mask2 | mask3) == 0)
     {
-        // trivial accept
-        return 2;
+        // if all 3 vertices are completely inside
+        // all of the clip planes, we can just keep the whole triangle
+        return PreClipResult::TrivialAccept;
     }
     else
     {
-        // need to clip
-        return 0;
+        // Needs some amount of clipping
+        return PreClipResult::NeedsClipping;
     }
 }
 
 void TRPipelineThread2::ClipTriangle(int64_t in_i1, int64_t in_i2, int64_t in_i3)
 {
+    // Find 3 SV_POSITION values
+    float4* in_v1 = GetVertexPosition<float4>(in_i1);
+    float4* in_v2 = GetVertexPosition<float4>(in_i2);
+    float4* in_v3 = GetVertexPosition<float4>(in_i3);
+
+    PreClipResult preClipResult = PreClipTriangle(in_v1, in_v2, in_v3);
+    switch (preClipResult)
+    {
+    case PreClipResult::TrivialAccept:
+        AppendTriangle(in_i1, in_i2, in_i3); // append the whole triangle & we're done
+        return;
+
+    default:
+    case PreClipResult::TrivialReject:
+        // Not keeping any of it. Return
+        return;
+
+    case PreClipResult::NeedsClipping:
+        // break and continue this function
+        break;
+    }
+
     int64_t indices[2][8];
     int iRead = 0, iWrite = 1, numIndices = 0, count = 0;
 
@@ -514,7 +525,7 @@ static inline int rzround(float f)
 }
 
 // rasterize a 2D triangle, binning the spans
-void TRPipelineThread2::DDARastTriangle(const float4* v1, const float4* v2, const float4* v3, uint32_t* renderTarget, int pitch)
+void TRPipelineThread2::DDARastTriangle(const float4* v1, const float4* v2, const float4* v3)
 {
     struct rast_span
     {
@@ -533,12 +544,14 @@ void TRPipelineThread2::DDARastTriangle(const float4* v1, const float4* v2, cons
         float2(v3->x, v3->y)
     };
 
+#if 0
     // Ensure properly clipped vertices
     assert(v[0].y >= 0 && v[1].y >= 0 && v[2].y >= 0);
     assert(v[0].y < CurrentCommand->RenderTarget->GetHeight() && v[1].y < CurrentCommand->RenderTarget->GetHeight() && v[2].y < CurrentCommand->RenderTarget->GetHeight());
 
     assert(v[0].x >= 0 && v[1].x >= 0 && v[2].x >= 0);
     assert(v[0].x < CurrentCommand->RenderTarget->GetWidth() && v[1].x < CurrentCommand->RenderTarget->GetWidth() && v[2].x < CurrentCommand->RenderTarget->GetWidth());
+#endif
 
     // first, sort the vertices based on y
     int top = 0, mid = 0, bottom = 0;
@@ -612,14 +625,20 @@ void TRPipelineThread2::DDARastTriangle(const float4* v1, const float4* v2, cons
         }
     }
 
-#if 0
+#define ENABLE_LERPED_PATH
+
+#ifdef ENABLE_LERPED_PATH
     // Spans determined, now set up lerping parameters (shared by all spans)
-    vs_output v1 = GetSSEVertexAttributes(iFirstVertex);
-    vs_output v2 = GetSSEVertexAttributes(iFirstVertex + 1);
-    vs_output v3 = GetSSEVertexAttributes(iFirstVertex + 2);
-    vec2 ab{ _mm_sub_ps(v2.Position.x, v1.Position.x),_mm_sub_ps(v2.Position.y, v1.Position.y) };
-    vec2 bc{ _mm_sub_ps(v3.Position.x, v2.Position.x),_mm_sub_ps(v3.Position.y, v2.Position.y) };
-    vec2 ac{ _mm_sub_ps(v3.Position.x, v1.Position.x),_mm_sub_ps(v3.Position.y, v1.Position.y) };
+    uint8_t* v1Base = (uint8_t*)v1 - PositionOffset;
+    uint8_t* v2Base = (uint8_t*)v2 - PositionOffset;
+    uint8_t* v3Base = (uint8_t*)v3 - PositionOffset;
+    vec2 a = { _mm_set1_ps(v1->x), _mm_set1_ps(v1->y) };
+    vec2 b = { _mm_set1_ps(v2->x), _mm_set1_ps(v2->y) };
+    vec2 c = { _mm_set1_ps(v3->x), _mm_set1_ps(v3->y) };
+    vec2 ab = { _mm_sub_ps(b.x, a.x), _mm_sub_ps(b.y, a.y) };
+    vec2 bc = { _mm_sub_ps(c.x, b.x), _mm_sub_ps(c.y, b.y) };
+    vec2 ac = { _mm_sub_ps(c.x, a.x), _mm_sub_ps(c.y, a.y) };
+    uint8_t* scratchVertex = VertexMemory + VertexMemoryOffset;
 #endif
 
     int y = rzround(ytop);
@@ -627,42 +646,64 @@ void TRPipelineThread2::DDARastTriangle(const float4* v1, const float4* v2, cons
     rast_span* span = spans;
     for (; next_span > 0; --next_span, ++span)
     {
+        if (y < 0) continue;
+        if (y >= RTHeight) break;
+
+        int start = rzround(span->x1);
+        int end = rzround(span->x2);
+
 #ifdef RENDER_WIREFRAME
 
-        renderTarget[y * pitch + rzround(span->x1)] = 0xFFFF0000;
-        renderTarget[y * pitch + rzround(span->x2)] = 0xFFFF0000;
+        if (start >= 0)
+            RenderTarget[y * RTPitch + start] = 0xFFFF0000;
+
+        if (end < RTWidth)
+            RenderTarget[y * RTPitch + end] = 0xFFFF0000;
 
 #else // RENDER_WIREFRAME
 
 #ifdef ENABLE_LERPED_PATH
-        for (int x = (int)span->x1; x < (int)span->x2; x += 4)
+
+        __m128 vecy = _mm_set1_ps((float)y);
+
+        for (int x = start; x < end; x += 4)
         {
-            lerp_result lerp = sseLerp(
-                v1, v2, v3, ab, bc, ac,
-                vec2{ _mm_set_ps((float)x, x + 1.f, x + 2.f, x + 3.f), _mm_set1_ps((float)y) });
+            if (x < 0) continue;
+            if (y >= RTWidth) break;
 
-            int imask = _mm_movemask_ps(lerp.mask);
+            vec2 p{ _mm_set_ps((float)x, x + 1.f, x + 2.f, x + 3.f), vecy };
 
-            vs_output input{ lerp.position, lerp.color };
-            vec4 frags = command->PixelShader(command->PixelShader, input);
+            bary_result bary = ComputeBarycentricCoords(a, b, ab, bc, ac, p);
+            int imask = _mm_movemask_ps(bary.mask);
 
-            uint32_t colors[4];
-            ConvertFragsToColors(frags, colors);
+            float w1[4], w2[4], w3[4];
+            _mm_storeu_ps(w1, bary.xA);
+            _mm_storeu_ps(w2, bary.xB);
+            _mm_storeu_ps(w3, bary.xC);
 
-            int index = y * pitch + x + 3;
+            int index = y * RTPitch + x + 3;
             for (int i = 0; i < 4; ++i, --index)
             {
                 if ((imask & 0x01) == 0)
                 {
-                    renderTarget[index] = colors[i];
+                    Lerp(v1Base, v2Base, v3Base, w1[i], w2[i], w3[i], scratchVertex);
+                    float4 color = CurrentCommand->PixelShader3(CurrentCommand->PSConstantBuffer, scratchVertex);
+                    RenderTarget[index] =
+                        (uint32_t)(uint8_t)(color.w * 255.f) << 24 |
+                        (uint32_t)(uint8_t)(color.z * 255.f) << 16 |
+                        (uint32_t)(uint8_t)(color.y * 255.f) << 8 |
+                        (uint32_t)(uint8_t)(color.x * 255.f);
                 }
                 imask >>= 1;
             }
         }
 #else // ENABLE_LERPED_PATH
-        for (int x = rzround(span->x1); x < rzround(span->x2); ++x)
+        for (int x = start; x < end; ++x)
         {
-            renderTarget[y * pitch + x] = 0xFFFF0000;
+            if (x < 0) continue;
+            if (x >= RTWidth) break;
+
+            RenderTarget[y * RTPitch + x] = 0xFFFF0000;
         }
 #endif // ENABLE_LERPED_PATH
 
@@ -681,5 +722,115 @@ template <typename T>
 inline T* TRPipelineThread2::GetVertexPosition(int64_t i)
 {
     return (T*)(VertexMemory + PositionOffset + (i * OutputVertexStride));
+}
+                                                    
+// Compute barycentric coordinates (lerp weights) for 4 samples at once.
+bary_result __vectorcall TRPipelineThread2::ComputeBarycentricCoords(
+    const vec2 a, const vec2 b,                     // first 2 vertices in vectorized form
+    const vec2 ab, const vec2 bc, const vec2 ac,    // edges of triangle, in vectorized form
+    const vec2 p)                                   // 4 pixels to compute lerp values for
+{
+    // Find barycentric coordinates of P (wA, wB, wC)
+    vec2 ap, bp;
+    ap.x = _mm_sub_ps(p.x, a.x);
+    ap.y = _mm_sub_ps(p.y, a.y);
+    bp.x = _mm_sub_ps(p.x, b.x);
+    bp.y = _mm_sub_ps(p.y, b.y);
+
+    // float3 wC = cross(ab, ap);
+    // expand out to:
+    //    wC.x = ab.y * ap.z - ap.y * ab.z;
+    //    wC.y = ab.z * ap.x - ap.z * ab.x;
+    //    wC.z = ab.x * ap.y - ap.x * ab.y;
+    // since we are doing in screen space, z is always 0 so simplify:
+    //    wC.x = 0
+    //    wC.y = 0
+    //    wC.z = ab.x * ap.y - ap.x * ab.y
+    // or, simply:
+    //    wC = abx * apy - apx * aby;
+    __m128 wC = _mm_sub_ps(_mm_mul_ps(ab.x, ap.y), _mm_mul_ps(ap.x, ab.y));
+    __m128 mask1 = _mm_cmplt_ps(wC, _mm_setzero_ps());
+
+    // Use same reduction for wB & wA
+    __m128 wB = _mm_sub_ps(_mm_mul_ps(ap.x, ac.y), _mm_mul_ps(ac.x, ap.y));
+    __m128 mask2 = _mm_cmplt_ps(wB, _mm_setzero_ps());
+
+    __m128 wA = _mm_sub_ps(_mm_mul_ps(bc.x, bp.y), _mm_mul_ps(bp.x, bc.y));
+    __m128 mask3 = _mm_cmplt_ps(wA, _mm_setzero_ps());
+
+    bary_result result;
+    result.mask = _mm_or_ps(mask1, _mm_or_ps(mask2, mask3));
+
+    // Use a similar reduction for cross of ab x ac (to find unnormalized normal)
+    __m128 norm = _mm_sub_ps(_mm_mul_ps(ab.x, ac.y), _mm_mul_ps(ac.x, ab.y));
+    norm = _mm_rcp_ps(norm);
+
+    // to find length of this cross product, which already know is purely in the z
+    // direction, is just the length of the z component, which is the exactly the single
+    // channel norm we computed above. Similar logic is used for lengths of each of
+    // the weights, since they are all single channel vectors, the one channel is exactly
+    // the length.
+
+    result.xA = _mm_mul_ps(wA, norm);
+    result.xB = _mm_mul_ps(wB, norm);
+    result.xC = _mm_mul_ps(wC, norm);
+
+    return result;
+}
+
+
+void TRPipelineThread2::Lerp(
+    uint8_t* v1, uint8_t* v2, uint8_t* v3,          // triangle vertex (top of each vertex struct)
+    float w1, float w2, float w3,                   // lerping weights
+    uint8_t* output)                                // scratch memory to write lerped values to
+{
+    // interpolate attributes
+    for (auto& attr : CurrentCommand->OutputVertexLayout)
+    {
+        // TODO: should avoid using switch here?
+        switch (attr.Type)
+        {
+        case VertexAttributeType::Float:
+        {
+            float* x1 = (float*)(v1 + attr.ByteOffset);
+            float* x2 = (float*)(v2 + attr.ByteOffset);
+            float* x3 = (float*)(v3 + attr.ByteOffset);
+            float* out = (float*)(output + attr.ByteOffset);
+            *out = *x1 * w1 + *x2 * w2 + *x3 * w3;
+            break;
+        }
+        case VertexAttributeType::Float2:
+        {
+            float2* x1 = (float2*)(v1 + attr.ByteOffset);
+            float2* x2 = (float2*)(v2 + attr.ByteOffset);
+            float2* x3 = (float2*)(v3 + attr.ByteOffset);
+            float2* out = (float2*)(output + attr.ByteOffset);
+            *out = *x1 * w1 + *x2 * w2 + *x3 * w3;
+            break;
+        }
+        case VertexAttributeType::Float3:
+        {
+            float3* x1 = (float3*)(v1 + attr.ByteOffset);
+            float3* x2 = (float3*)(v2 + attr.ByteOffset);
+            float3* x3 = (float3*)(v3 + attr.ByteOffset);
+            float3* out = (float3*)(output + attr.ByteOffset);
+            *out = *x1 * w1 + *x2 * w2 + *x3 * w3;
+            break;
+        }
+        case VertexAttributeType::Float4:
+        {
+            float4* x1 = (float4*)(v1 + attr.ByteOffset);
+            float4* x2 = (float4*)(v2 + attr.ByteOffset);
+            float4* x3 = (float4*)(v3 + attr.ByteOffset);
+            float4* out = (float4*)(output + attr.ByteOffset);
+            *out = *x1 * w1 + *x2 * w2 + *x3 * w3;
+            break;
+        }
+
+        default:
+            assert(false);
+            break;
+        }
+    }
 }
 

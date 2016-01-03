@@ -126,6 +126,7 @@ struct RenderCommand
     // Pixel Stage
     pfnSSEPixelShader PixelShader;
     pfnPixelShader PixelShader2;
+    pfnPixelShader3 PixelShader3;
     void* PSConstantBuffer;
 
     // Output (no blend ops or z buffer support yet)

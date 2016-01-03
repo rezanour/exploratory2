@@ -60,6 +60,7 @@ static VertexOut __vectorcall SimpleVertexShader2(const void* const constants, c
 static float4 __vectorcall SimplePixelShader2(const void* const constants, const VertexOut& input);
 
 static void SimpleVertexShader3(const void* const constants, const void* const input, void* output, int64_t vertexCount);
+static float4 __vectorcall SimplePixelShader3(const void* const constants, const uint8_t* input);
 
 static LRESULT CALLBACK AppWinProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -345,6 +346,7 @@ bool AppStartup()
     TheDevice->VSSetShader2(SimpleVertexShader2);
     TheDevice->PSSetShader2(SimplePixelShader2);
     TheDevice->VSSetShader3(SimpleVertexShader3);
+    TheDevice->PSSetShader3(SimplePixelShader3);
     TheDevice->VSSetConstantBuffer(&ShaderConstants);
 
     XMStoreFloat4x4((XMFLOAT4X4*)&ShaderConstants.WorldMatrix, XMMatrixIdentity());
@@ -374,11 +376,25 @@ bool DoFrame()
     static float dir = -1.f;
 
 #ifdef RENDER_MANY
-    if (totalFrameIndex++ % 100 == 0) dir *= -1;
+    if (totalFrameIndex++ % 1000 == 0) dir *= -1;
 #else
-    if (totalFrameIndex++ % 150 == 0) dir *= -1;
+    if (totalFrameIndex++ % 1500 == 0) dir *= -1;
 #endif
-    angle += dir * 0.0125f;
+    static bool animating = true;
+    static bool wasDown = false;
+    if (GetAsyncKeyState(VK_SPACE) & 0x8000)
+    {
+        wasDown = true;
+    }
+    else
+    {
+        if (wasDown) animating = !animating;
+        wasDown = false;
+    }
+    if (animating)
+    {
+        angle += dir * 0.00125f;
+    }
     XMStoreFloat4x4(&transform, XMMatrixRotationY(angle));
     memcpy_s(&ShaderConstants.WorldMatrix, sizeof(matrix4x4), &transform, sizeof(transform));
 #endif
@@ -518,5 +534,12 @@ void SimpleVertexShader3(
         outputVertices[i].Position = mul(vsConstants->ViewProjectionMatrix, pos);
         outputVertices[i].Color = vertices[i].Color;
     }
+}
+
+float4 __vectorcall SimplePixelShader3(const void* const constants, const uint8_t* input)
+{
+    UNREFERENCED_PARAMETER(constants);
+    const VertexOut* v = (const VertexOut*)input;
+    return float4(v->Color, 1.f);
 }
 

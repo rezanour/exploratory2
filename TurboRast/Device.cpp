@@ -56,6 +56,7 @@ void TRDevice::Draw(uint64_t vertexCount, uint64_t baseVertex)
     // Pixel Shader
     command->PixelShader = PixelShader;
     command->PixelShader2 = PixelShader2;
+    command->PixelShader3 = PixelShader3;
     command->PSConstantBuffer = PSConstantBuffer;
 
     // Output

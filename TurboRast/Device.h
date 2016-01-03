@@ -25,6 +25,7 @@ public:
     void VSSetConstantBuffer(void* constantBuffer) { VSConstantBuffer = constantBuffer; }
     void PSSetShader(pfnSSEPixelShader pixelShader) { PixelShader = pixelShader; }
     void PSSetShader2(pfnPixelShader pixelShader) { PixelShader2 = pixelShader; }
+    void PSSetShader3(pfnPixelShader3 pixelShader) { PixelShader3 = pixelShader; }
     void PSSetConstantBuffer(void* constantBuffer) { PSConstantBuffer = constantBuffer; }
     void OMSetRenderTarget(const std::shared_ptr<const TRTexture2D>& renderTarget) { RenderTarget = renderTarget; }
     void ClearRenderTarget(const std::shared_ptr<TRTexture2D>& renderTarget) const;
@@ -49,6 +50,7 @@ private:
     pfnVertexShader VertexShader2 = nullptr;
     pfnStreamVertexShader VertexShader3 = nullptr;
     pfnPixelShader PixelShader2 = nullptr;
+    pfnPixelShader3 PixelShader3 = nullptr;
     void* VSConstantBuffer = nullptr;
     void* PSConstantBuffer = nullptr;
     std::vector<VertexAttributeDesc> InputVertexLayout;
