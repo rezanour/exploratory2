@@ -1,7 +1,6 @@
 #include "Precomp.h"
 #include <d3d11.h>      // Device/swapchain for final framebuffer
 
-#include "TTDevice.h"
 #include "TurboTrace.h"
 
 using Microsoft::WRL::ComPtr;
@@ -24,15 +23,12 @@ static ComPtr<ID3D11DeviceContext> Context;
 static ComPtr<ID3D11Texture2D> BackBuffer;
 static ComPtr<ID3D11Texture2D> CPUBuffer[MaxFramesInFlight];
 
-static std::shared_ptr<TTDevice> TheDevice;
-static std::vector<float3> Vertices;
-static matrix4x4 CameraTransform;
-
 static raytracer_config TracerConfig;
 static std::vector<sphere_data> Spheres;
 static std::vector<triangle_data> Triangles;
 static std::vector<box_data> Boxes;
-static aabb_node* AabbTree;
+static aabb_node* AabbHeap;
+static aabb_node* AabbRoot;
 
 static bool WinStartup();
 static void WinShutdown();
@@ -267,26 +263,15 @@ using namespace DirectX;
 
 bool AppStartup()
 {
-    TheDevice.reset(new TTDevice());
-    if (!TheDevice->Initialize(float3(-10.f, -10.f, -10.f), float3(10.f, 10.f, 10.f)))
-    {
-        assert(false);
-        return false;
-    }
-
     // Fill in vertices for triangle
 #define RENDER_MANY
 #ifdef RENDER_MANY
     for (float z = 5.f; z >= -5.f; z -= 1.f)
     {
-        for (float y = 5.f; y >= -5.f; y -= 0.5f)
+        for (float y = 5.f; y >= -5.f; y -= 0.25f)
         {
-            for (float x = -5.f; x < 5.f; x += 0.5f)
+            for (float x = -5.f; x < 5.f; x += 0.25f)
             {
-                Vertices.push_back(float3(x - 0.125f, y - 0.125f, z));
-                Vertices.push_back(float3(x + 0.f, y + 0.125f, z));
-                Vertices.push_back(float3(x + 0.125f, y - 0.125f, z));
-
                 triangle_data triangle;
                 triangle.v1[0] = x - 0.125f;
                 triangle.v1[1] = y - 0.125f;
@@ -323,10 +308,6 @@ bool AppStartup()
 #else
     for (int i = 0; i < 1; ++i)
     {
-        Vertices.push_back(float3(-0.5f, -0.5f, 0.f));
-        Vertices.push_back(float3(0.f, 0.5f, 0.f));
-        Vertices.push_back(float3(0.5f, -0.5f, 0.f));
-
         triangle_data triangle;
         triangle.v1[0] = -0.5f;
         triangle.v1[1] = -0.5f;
@@ -360,25 +341,19 @@ bool AppStartup()
 }
 #endif
 
-    AabbTree = tt_build_aabb_tree(Triangles.data(), (int)Triangles.size());
-
-    matrix4x4 world, viewProj;
-    XMStoreFloat4x4((XMFLOAT4X4*)&world, XMMatrixIdentity());
-    XMStoreFloat4x4((XMFLOAT4X4*)&viewProj, XMMatrixMultiply(XMMatrixLookAtLH(XMVectorSet(0.f, 0, -8.f, 1), XMVectorSet(0, 0, 0, 1), XMVectorSet(0, 1, 0, 0)), XMMatrixPerspectiveFovLH(XMConvertToRadians(90.f), OutputWidth / (float)OutputHeight, 0.1f, 100.f)));
-
-    CameraTransform.r[0] = float4(1, 0, 0, 0);
-    CameraTransform.r[1] = float4(0, 1, 0, 0);
-    CameraTransform.r[2] = float4(0, 0, 1, 0);
-    CameraTransform.r[3] = float4(0, 0, -8.f, 1);
-
-    TheDevice->SetFov(XMConvertToRadians(90.f));
+    tt_build_aabb_tree(Triangles.data(), (int)Triangles.size(),
+        &AabbHeap, &AabbRoot);
 
     return true;
 }
 
 void AppShutdown()
 {
-    TheDevice = nullptr;
+    // HUGE LEAK (need to recurse and delete children).
+    // Better: need to actually allocate all nodes out of
+    // contiguous block and use either pointers or indices
+    // to reference children. Then can be deleted in 1 shot
+    delete [] AabbHeap;
 }
 
 bool DoFrame()
@@ -391,11 +366,6 @@ bool DoFrame()
         return false;
     }
 
-#if 0
-    TheDevice->SetRenderTarget((uint32_t*)mapped.pData, OutputWidth, OutputHeight, mapped.RowPitch / sizeof(uint32_t));
-    TheDevice->Draw(Vertices.data(), (int64_t)Vertices.size(), CameraTransform);
-#else
-
     float cameraPosition[] = { 0.f, 0.f, -8.f };
     tt_setup(&TracerConfig, (uint32_t*)mapped.pData, OutputWidth, OutputHeight, mapped.RowPitch / sizeof(uint32_t),
         XMConvertToRadians(90.f), cameraPosition);
@@ -405,10 +375,7 @@ bool DoFrame()
     //    Triangles.data(), 0,// (int)Triangles.size());
     //    Boxes.data(), (int)Boxes.size());
 
-    tt_trace(&TracerConfig, AabbTree);
-
-
-#endif
+    tt_trace(&TracerConfig, AabbRoot);
 
     Context->Unmap(CPUBuffer[FrameIndex].Get(), 0);
 

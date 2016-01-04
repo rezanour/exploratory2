@@ -49,8 +49,9 @@ struct raytracer_config
     float view_up[3];
 };
 
-aabb_node* __stdcall tt_build_aabb_tree(
-    const triangle_data* triangles, int triangle_count);
+void __stdcall tt_build_aabb_tree(
+    const triangle_data* triangles, int triangle_count,
+    aabb_node** node_heap, aabb_node** root_node);
 
 void __stdcall tt_setup(
     raytracer_config* config,

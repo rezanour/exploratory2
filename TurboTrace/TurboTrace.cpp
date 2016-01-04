@@ -2,7 +2,7 @@
 #include "TurboTrace.h"
 
 //#define CULL_ENABLED
-#define MT_ENABLED
+//#define MT_ENABLED
 
 // private implementation types
 
@@ -65,8 +65,8 @@ static test_result __vectorcall test_triangle(
     __m128 v1, __m128 v2, __m128 v3, __m128 in_norm);
 
 static test_result __vectorcall test_box(
-    vec3 start, vec3 dir,
-    __m128 in_min, __m128 in_max);
+    vec3 start, vec3 dir, vec3 inv_dir,
+    __m128 dir_signs[3], vec3 min, vec3 max);
 
 static void __vectorcall trace_rays(
     const raytracer_config* config,
@@ -382,6 +382,8 @@ test_result __vectorcall test_triangle(
     vec3 start, vec3 dir,
     __m128 v1, __m128 v2, __m128 v3, __m128 in_norm)
 {
+    test_result result;
+
     vec3 a = expand(v1);
     vec3 b = expand(v2);
     vec3 c = expand(v3);
@@ -396,7 +398,6 @@ test_result __vectorcall test_triangle(
     __m128 d = dot(neg_norm, dir);
 
     // test that we're pointing towards the plane
-    test_result result;
     result.hit = _mm_cmpgt_ps(d, zero);
 
     // test that our start is in front of the plane
@@ -414,6 +415,7 @@ test_result __vectorcall test_triangle(
     point.y = _mm_add_ps(start.y, _mm_mul_ps(dir.y, result.dist));
     point.z = _mm_add_ps(start.z, _mm_mul_ps(dir.z, result.dist));
 
+#if 1
     // test if point is in triangle
     vec3 c1 = cross(sub(b, a), sub(point, a));
     vec3 c2 = cross(sub(c, b), sub(point, b));
@@ -424,108 +426,51 @@ test_result __vectorcall test_triangle(
     result.hit = _mm_and_ps(result.hit, _mm_cmpge_ps(dot1, zero));
     result.hit = _mm_and_ps(result.hit, _mm_cmpge_ps(dot2, zero));
     result.hit = _mm_and_ps(result.hit, _mm_cmpge_ps(dot3, zero));
+#else
 
+    vec3 u = sub(b, a);
+    vec3 v = sub(c, a);
+    vec3 w = sub(point, a);
+    __m128 uv = dot(u, v);
+    __m128 wv = dot(w, v);
+    __m128 vv = dot(v, v);
+    __m128 wu = dot(w, u);
+    __m128 uu = dot(u, u);
+    __m128 uv2 = _mm_mul_ps(uv, uv);
+    __m128 denom = _mm_sub_ps(uv2, _mm_mul_ps(uu, vv));
+    __m128 s = _mm_div_ps(_mm_sub_ps(_mm_mul_ps(uv, wv), _mm_mul_ps(vv, wu)), denom);
+    __m128 t = _mm_div_ps(_mm_sub_ps(_mm_mul_ps(uv, wu), _mm_mul_ps(uu, wv)), denom);
+    __m128 st = _mm_add_ps(s, t);
+    result.hit = _mm_and_ps(result.hit, _mm_cmpge_ps(s, zero));
+    result.hit = _mm_and_ps(result.hit, _mm_cmpge_ps(t, zero));
+    result.hit = _mm_and_ps(result.hit, _mm_cmple_ps(st, _mm_set1_ps(1.f)));
+#endif
     return result;
 }
 
 test_result __vectorcall test_box(
-    vec3 start, vec3 dir, 
-    __m128 in_min, __m128 in_max)
+    vec3 start, vec3 dir, vec3 inv_dir,
+    __m128 dir_signs[3], vec3 min, vec3 max)
 {
-    vec3 min = expand(in_min);
-    vec3 max = expand(in_max);
+    __m128 t1 = _mm_or_ps(_mm_and_ps(dir_signs[0], max.x), _mm_andnot_ps(dir_signs[0], min.x));
+    t1 = _mm_mul_ps(_mm_sub_ps(t1, start.x), inv_dir.x);
+    __m128 t2 = _mm_or_ps(_mm_andnot_ps(dir_signs[0], max.x), _mm_and_ps(dir_signs[0], min.x));
+    t2 = _mm_mul_ps(_mm_sub_ps(t2, start.x), inv_dir.x);
+
+    __m128 t3 = _mm_or_ps(_mm_and_ps(dir_signs[1], max.y), _mm_andnot_ps(dir_signs[1], min.y));
+    t3 = _mm_mul_ps(_mm_sub_ps(t3, start.y), inv_dir.y);
+    __m128 t4 = _mm_or_ps(_mm_andnot_ps(dir_signs[1], max.y), _mm_and_ps(dir_signs[1], min.y));
+    t4 = _mm_mul_ps(_mm_sub_ps(t4, start.y), inv_dir.y);
+
+    __m128 t5 = _mm_or_ps(_mm_and_ps(dir_signs[2], max.z), _mm_andnot_ps(dir_signs[2], min.z));
+    t5 = _mm_mul_ps(_mm_sub_ps(t5, start.z), inv_dir.z);
+    __m128 t6 = _mm_or_ps(_mm_andnot_ps(dir_signs[2], max.z), _mm_and_ps(dir_signs[2], min.z));
+    t6 = _mm_mul_ps(_mm_sub_ps(t6, start.z), inv_dir.z);
 
     test_result result;
-    result.hit = _mm_setzero_ps();
-    result.dist = _mm_set1_ps(FLT_MAX);
-
-    __m128 zero = _mm_setzero_ps();
-
-    vec3 dist1 = sub(min, start);
-    vec3 dist2 = sub(start, max);
-
-    // enter from -x
-    __m128 mask = _mm_and_ps(_mm_cmpgt_ps(dist1.x, zero), _mm_cmpgt_ps(dir.x, zero));
-    __m128 r = _mm_div_ps(dist1.x, dir.x);
-    vec3 point;
-    point.y = _mm_add_ps(start.y, _mm_mul_ps(dir.y, r));
-    point.z = _mm_add_ps(start.z, _mm_mul_ps(dir.z, r));
-    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.y, min.y));
-    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.y, max.y));
-    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.z, min.z));
-    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.z, max.z));
-    result.hit = _mm_or_ps(result.hit, mask);
-    result.dist = r;
-
-    // enter from +x
-    mask = _mm_and_ps(_mm_cmpgt_ps(dist2.x, zero), _mm_cmplt_ps(dir.x, zero));
-    r = _mm_div_ps(dist2.x, _mm_sub_ps(zero, dir.x));
-    point.y = _mm_add_ps(start.y, _mm_mul_ps(dir.y, r));
-    point.z = _mm_add_ps(start.z, _mm_mul_ps(dir.z, r));
-    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.y, min.y));
-    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.y, max.y));
-    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.z, min.z));
-    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.z, max.z));
-    result.hit = _mm_or_ps(result.hit, mask);
-    __m128 comp = _mm_cmplt_ps(r, result.dist);
-    mask = _mm_and_ps(mask, comp);
-    result.dist = _mm_or_ps(_mm_and_ps(mask, r), _mm_andnot_ps(mask, result.dist));
-
-    // enter from -y
-    mask = _mm_and_ps(_mm_cmpgt_ps(dist1.y, zero), _mm_cmpgt_ps(dir.y, zero));
-    r = _mm_div_ps(dist1.y, dir.y);
-    point.x = _mm_add_ps(start.x, _mm_mul_ps(dir.x, r));
-    point.z = _mm_add_ps(start.z, _mm_mul_ps(dir.z, r));
-    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.x, min.x));
-    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.x, max.x));
-    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.z, min.z));
-    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.z, max.z));
-    result.hit = _mm_or_ps(result.hit, mask);
-    comp = _mm_cmplt_ps(r, result.dist);
-    mask = _mm_and_ps(mask, comp);
-    result.dist = _mm_or_ps(_mm_and_ps(mask, r), _mm_andnot_ps(mask, result.dist));
-
-    // enter from +y
-    mask = _mm_and_ps(_mm_cmpgt_ps(dist2.y, zero), _mm_cmplt_ps(dir.y, zero));
-    r = _mm_div_ps(dist2.y, _mm_sub_ps(zero, dir.y));
-    point.x = _mm_add_ps(start.x, _mm_mul_ps(dir.x, r));
-    point.z = _mm_add_ps(start.z, _mm_mul_ps(dir.z, r));
-    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.x, min.x));
-    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.x, max.x));
-    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.z, min.z));
-    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.z, max.z));
-    result.hit = _mm_or_ps(result.hit, mask);
-    comp = _mm_cmplt_ps(r, result.dist);
-    mask = _mm_and_ps(mask, comp);
-    result.dist = _mm_or_ps(_mm_and_ps(mask, r), _mm_andnot_ps(mask, result.dist));
-
-    // enter from -z
-    mask = _mm_and_ps(_mm_cmpgt_ps(dist1.z, zero), _mm_cmpgt_ps(dir.z, zero));
-    r = _mm_div_ps(dist1.z, dir.z);
-    point.x = _mm_add_ps(start.x, _mm_mul_ps(dir.x, r));
-    point.y = _mm_add_ps(start.y, _mm_mul_ps(dir.y, r));
-    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.x, min.x));
-    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.x, max.x));
-    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.y, min.y));
-    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.y, max.y));
-    result.hit = _mm_or_ps(result.hit, mask);
-    comp = _mm_cmplt_ps(r, result.dist);
-    mask = _mm_and_ps(mask, comp);
-    result.dist = _mm_or_ps(_mm_and_ps(mask, r), _mm_andnot_ps(mask, result.dist));
-
-    // enter from +z
-    mask = _mm_and_ps(_mm_cmpgt_ps(dist2.z, zero), _mm_cmplt_ps(dir.z, zero));
-    r = _mm_div_ps(dist2.z, _mm_sub_ps(zero, dir.z));
-    point.x = _mm_add_ps(start.x, _mm_mul_ps(dir.x, r));
-    point.y = _mm_add_ps(start.y, _mm_mul_ps(dir.y, r));
-    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.x, min.x));
-    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.x, max.x));
-    mask = _mm_and_ps(mask, _mm_cmpgt_ps(point.y, min.y));
-    mask = _mm_and_ps(mask, _mm_cmplt_ps(point.y, max.y));
-    result.hit = _mm_or_ps(result.hit, mask);
-    comp = _mm_cmplt_ps(r, result.dist);
-    mask = _mm_and_ps(mask, comp);
-    result.dist = _mm_or_ps(_mm_and_ps(mask, r), _mm_andnot_ps(mask, result.dist));
+    result.dist = _mm_max_ps(_mm_max_ps(_mm_min_ps(t1, t2), _mm_min_ps(t3, t4)), _mm_min_ps(t5, t6));
+    __m128 tmax = _mm_min_ps(_mm_min_ps(_mm_max_ps(t1, t2), _mm_max_ps(t3, t4)), _mm_max_ps(t5, t6));
+    result.hit = _mm_cmpge_ps(tmax, result.dist);
 
     return result;
 }
@@ -542,6 +487,16 @@ void __vectorcall trace_rays(
     __m128 nearest = _mm_set1_ps(1000.f);
     __m128i nearest_index = _mm_setzero_si128();
     __m128i nearest_type = _mm_setzero_si128();
+
+    vec3 inv_dir;
+    inv_dir.x = _mm_div_ps(_mm_set1_ps(1.f), dir.x);
+    inv_dir.y = _mm_div_ps(_mm_set1_ps(1.f), dir.y);
+    inv_dir.z = _mm_div_ps(_mm_set1_ps(1.f), dir.z);
+
+    __m128 dir_signs[3];
+    dir_signs[0] = _mm_cmplt_ps(inv_dir.x, _mm_setzero_ps());
+    dir_signs[1] = _mm_cmplt_ps(inv_dir.y, _mm_setzero_ps());
+    dir_signs[2] = _mm_cmplt_ps(inv_dir.z, _mm_setzero_ps());
 
     for (int i = 0; i < sphere_count; ++i)
     {
@@ -626,12 +581,12 @@ void __vectorcall trace_rays(
         __m128i index = _mm_set1_epi32(i);
         const box_data* box = boxes + i;
 
-        __m128 min = _mm_load_ps(box->min);
-        __m128 max = _mm_load_ps(box->max);
+        vec3 min = expand(_mm_load_ps(box->min));
+        vec3 max = expand(_mm_load_ps(box->max));
 
         // TODO: evaluate: _mm_prefetch((const char*)(triangles + i + 1), _MM_HINT_T0);
 
-        test_result result = test_box(start, dir, min, max);
+        test_result result = test_box(start, dir, inv_dir, dir_signs, min, max);
 
         // check if any of the dists were less than the previous nearest.
         // combine that with the hit mask though, so we ignore results that
@@ -984,65 +939,20 @@ DWORD CALLBACK thread_proc(void* context)
     return 0;
 }
 
-bool test_box(const float start[3], const float dir[3], const float min[3], const float max[3], float* out_dist)
+bool test_box(
+    const float start[3], const float dir[3], const int dir_signs[3],
+    const float inv_dir[3], const float bounds[2][3],
+    float* out_dist)
 {
-    // for each axis, see if we enter the box
-    float point[3];
-    float nearest = FLT_MAX;
-    bool hit = false;
-    for (int i = 0; i < 3; ++i)
-    {
-        float dist = min[i] - start[i];
-        if (dist > 0 && dir[i] > 0)
-        {
-            float r = dist / dir[i];
-            point[0] = start[0] + dir[0] * r;
-            point[1] = start[1] + dir[1] * r;
-            point[2] = start[2] + dir[2] * r;
-
-            // check other axes
-            for (int j = 0; j < 3; ++j)
-            {
-                if (i == j) continue;
-                if (point[j] > min[j] && point[j] < max[j])
-                {
-                    // hit
-                    hit = true;
-                    if (r < nearest)
-                    {
-                        nearest = r;
-                    }
-                }
-            }
-        }
-
-        dist = start[i] - max[i];
-        if (dist > 0 && dir[i] < 0)
-        {
-            float r = dist / -dir[i];
-            point[0] = start[0] + dir[0] * r;
-            point[1] = start[1] + dir[1] * r;
-            point[2] = start[2] + dir[2] * r;
-
-            // check other axes
-            for (int j = 0; j < 3; ++j)
-            {
-                if (i == j) continue;
-                if (point[j] > min[j] && point[j] < max[j])
-                {
-                    // hit
-                    hit = true;
-                    if (r < nearest)
-                    {
-                        nearest = r;
-                    }
-                }
-            }
-        }
-    }
-
-    *out_dist = nearest;
-    return hit;
+    float t1 = (bounds[dir_signs[0]][0] - start[0]) * inv_dir[0];
+    float t2 = (bounds[1 - dir_signs[0]][0] - start[0]) * inv_dir[0];
+    float t3 = (bounds[dir_signs[1]][1] - start[1]) * inv_dir[1];
+    float t4 = (bounds[1 - dir_signs[1]][1] - start[1]) * inv_dir[1];
+    float t5 = (bounds[dir_signs[2]][2] - start[2]) * inv_dir[2];
+    float t6 = (bounds[1 - dir_signs[2]][2] - start[2]) * inv_dir[2];
+    *out_dist = max(max(min(t1, t2), min(t3, t4)), min(t5, t6));
+    float tmax = min(min(max(t1, t2), max(t3, t4)), max(t5, t6));
+    return tmax >= *out_dist;
 }
 
 static void get_aabb(const triangle_data* triangle, float min[3], float max[3])
@@ -1068,11 +978,13 @@ static float get_growth_volume(
 }
 
 static aabb_node* insert_triangle(
+    aabb_node* node_heap, int64_t node_capacity, int64_t& node_count,
     aabb_node* node, const triangle_data* triangle)
 {
     if (!node)
     {
-        aabb_node* new_node = new aabb_node;
+        assert(node_count < node_capacity);
+        aabb_node* new_node = &node_heap[node_count++];
         new_node->children[0] = nullptr;
         new_node->triangles[0] = *triangle;
         new_node->num_triangles = 1;
@@ -1097,13 +1009,15 @@ static aabb_node* insert_triangle(
         }
         
         // no? split it
-        aabb_node* new_leaf = new aabb_node;
+        assert(node_count < node_capacity);
+        aabb_node* new_leaf = &node_heap[node_count++];
         new_leaf->children[0] = nullptr;
         new_leaf->triangles[0] = *triangle;
         new_leaf->num_triangles = 1;
         get_aabb(triangle, new_leaf->min, new_leaf->max);
 
-        aabb_node* new_inner = new aabb_node;
+        assert(node_count < node_capacity);
+        aabb_node* new_inner = &node_heap[node_count++];
         new_inner->children[0] = node;
         new_inner->children[1] = new_leaf;
         for (int i = 0; i < 3; ++i)
@@ -1119,11 +1033,11 @@ static aabb_node* insert_triangle(
         if (get_growth_volume(node->children[0]->min, node->children[0]->max, triangle)
             < get_growth_volume(node->children[1]->min, node->children[1]->max, triangle))
         {
-            node->children[0] = insert_triangle(node->children[0], triangle);
+            node->children[0] = insert_triangle(node_heap, node_capacity, node_count, node->children[0], triangle);
         }
         else
         {
-            node->children[1] = insert_triangle(node->children[1], triangle);
+            node->children[1] = insert_triangle(node_heap, node_capacity, node_count, node->children[1], triangle);
         }
 
         for (int i = 0; i < 3; ++i)
@@ -1135,15 +1049,19 @@ static aabb_node* insert_triangle(
     }
 }
 
-aabb_node* __stdcall tt_build_aabb_tree(
-    const triangle_data* triangles, int triangle_count)
+void __stdcall tt_build_aabb_tree(
+    const triangle_data* triangles, int triangle_count,
+    aabb_node** node_heap, aabb_node** root_node)
 {
-    aabb_node* root = nullptr;
+    int64_t node_capacity = triangle_count * 2; // ensure enough capacity
+    *node_heap = new aabb_node[node_capacity];
+    int64_t node_count = 0;
+
+    *root_node = nullptr;
     for (int i = 0; i < triangle_count; ++i)
     {
-        root = insert_triangle(root, &triangles[i]);
+        *root_node = insert_triangle(*node_heap, node_capacity, node_count, *root_node, &triangles[i]);
     }
-    return root;
 }
 
 
@@ -1225,7 +1143,9 @@ void __stdcall tt_trace(
 #endif // MT_ENABLED
 }
 
-static test_result __vectorcall test_node(vec3 start, vec3 dir, const aabb_node* node)
+static test_result __vectorcall test_node(
+    vec3 start, vec3 dir, vec3 inv_dir, __m128 dir_signs[3],
+    const aabb_node* node)
 {
     test_result total;
     total.hit = _mm_setzero_ps();
@@ -1265,22 +1185,22 @@ static test_result __vectorcall test_node(vec3 start, vec3 dir, const aabb_node*
     else
     {
         // inner node. check any child that the ray hits
-        __m128 min1 = _mm_load_ps(node->children[0]->min);
-        __m128 max1 = _mm_load_ps(node->children[0]->max);
-        test_result res1 = test_box(start, dir, min1, max1);
+        vec3 min1 = expand(_mm_load_ps(node->children[0]->min));
+        vec3 max1 = expand(_mm_load_ps(node->children[0]->max));
+        test_result res1 = test_box(start, dir, inv_dir, dir_signs, min1, max1);
         int mask1 = _mm_movemask_ps(res1.hit);
         if (mask1)
         {
-            res1 = test_node(start, dir, node->children[0]);
+            res1 = test_node(start, dir, inv_dir, dir_signs, node->children[0]);
         }
 
-        __m128 min2 = _mm_load_ps(node->children[1]->min);
-        __m128 max2 = _mm_load_ps(node->children[1]->max);
-        test_result res2 = test_box(start, dir, min2, max2);
+        vec3 min2 = expand(_mm_load_ps(node->children[1]->min));
+        vec3 max2 = expand(_mm_load_ps(node->children[1]->max));
+        test_result res2 = test_box(start, dir, inv_dir, dir_signs, min2, max2);
         int mask2 = _mm_movemask_ps(res2.hit);
         if (mask2)
         {
-            res2 = test_node(start, dir, node->children[1]);
+            res2 = test_node(start, dir, inv_dir, dir_signs, node->children[1]);
         }
 
         __m128 mask = _mm_cmplt_ps(res1.dist, total.dist);
@@ -1311,7 +1231,17 @@ void __vectorcall trace_rays(
     __m128i output_x, __m128i output_y,
     const aabb_node* scene)
 {
-    test_result result = test_node(start, dir, scene);
+    vec3 inv_dir;
+    inv_dir.x = _mm_div_ps(_mm_set1_ps(1.f), dir.x);
+    inv_dir.y = _mm_div_ps(_mm_set1_ps(1.f), dir.y);
+    inv_dir.z = _mm_div_ps(_mm_set1_ps(1.f), dir.z);
+
+    __m128 dir_signs[3];
+    dir_signs[0] = _mm_cmplt_ps(inv_dir.x, _mm_setzero_ps());
+    dir_signs[1] = _mm_cmplt_ps(inv_dir.y, _mm_setzero_ps());
+    dir_signs[2] = _mm_cmplt_ps(inv_dir.z, _mm_setzero_ps());
+
+    test_result result = test_node(start, dir, inv_dir, dir_signs, scene);
 
     int x[4], y[4];
     _mm_storeu_si128((__m128i*)x, output_x);

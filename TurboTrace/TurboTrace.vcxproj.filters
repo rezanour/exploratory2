@@ -21,18 +21,12 @@
     <ClCompile Include="Precomp.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="TTDevice.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="TurboTrace.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Precomp.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="TTDevice.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="TTMath.h">
