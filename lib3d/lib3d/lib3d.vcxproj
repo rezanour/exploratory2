@@ -12,10 +12,6 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Include\lib3d.h" />
-    <ClInclude Include="math\lib3d_math.h" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClCompile Include="lib3d_api.c" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{501D5ABA-832E-4720-BC56-7C1949F6C38A}</ProjectGuid>
@@ -60,6 +56,7 @@
       <SDLCheck>true</SDLCheck>
       <AdditionalIncludeDirectories>$(ProjectDir)Include</AdditionalIncludeDirectories>
       <TreatWarningAsError>true</TreatWarningAsError>
+      <CompileAs>CompileAsC</CompileAs>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>

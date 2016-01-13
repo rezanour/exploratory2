@@ -8,19 +8,10 @@
     <Filter Include="include">
       <UniqueIdentifier>{9702a0d5-c062-43e9-9c46-e29f6b3aba0d}</UniqueIdentifier>
     </Filter>
-    <Filter Include="math">
-      <UniqueIdentifier>{5e67c166-d91b-4207-9d75-3a190c75136a}</UniqueIdentifier>
-    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Include\lib3d.h">
       <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="math\lib3d_math.h">
-      <Filter>math</Filter>
-    </ClInclude>
-  </ItemGroup>
-  <ItemGroup>
-    <ClCompile Include="lib3d_api.c" />
   </ItemGroup>
 </Project>
