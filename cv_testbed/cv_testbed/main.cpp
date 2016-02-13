@@ -102,7 +102,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
     }
 
     int width = 0, height = 0;
-    std::unique_ptr<uint32_t[]> image = load_image(L"car2.jpg", true, &width, &height);
+    std::unique_ptr<uint32_t[]> image = load_image(L"car2.jpg", false, &width, &height);
     if (!image)
     {
         assert(false);
@@ -131,7 +131,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
         edges[i] = 0xFF000000 | (byte << 16) | (byte << 8) | byte;
     }
 
-#else // Show edge filter
+#elif 0 // Show edge filter
 
     std::unique_ptr<uint32_t[]> edges = detect_edges(image, true, width, height);
     if (!edges)
@@ -139,6 +139,10 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE, LPSTR, int)
         assert(false);
         return -5;
     }
+
+#else // Show highlighted "interest points"
+
+    std::unique_ptr<uint32_t[]> edges = detect_interest_points(image, true, width, height);
 
 #endif
 

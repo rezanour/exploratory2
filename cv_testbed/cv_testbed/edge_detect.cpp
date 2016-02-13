@@ -218,3 +218,105 @@ std::unique_ptr<float[]> convert_to_luminance(const std::unique_ptr<uint32_t[]>&
 
     return lum;
 }
+
+static bool is_interest_point(const uint32_t* input, int x, int y, int width, int window_size)
+{
+    // for every possible shift (u, v), compute SSD (sum of square differences). If minimum SSD is
+    // still larger than threshold, then this is an interest point
+    float min_ssd = FLT_MAX;
+    for (int v = -1; v < 2; ++v)
+    {
+        for (int u = -1; u < 2; ++u)
+        {
+            if (u == 0 && v == 0)
+                continue;
+
+            float ssd = 0;
+            for (int dy = y; dy < y + window_size; ++dy)
+            {
+                // clamp to edges
+                int effective_v = v;
+                if ((dy + v < 0) || (dy + v == y + window_size))
+                    effective_v = 0;
+
+                for (int dx = x; dx < x + window_size; ++dx)
+                {
+                    int effective_u = u;
+                    if ((dx + u < 0) || (dx + u == x + window_size))
+                        effective_u = 0;
+
+                    uint32_t a = input[dy * width + dx];
+                    uint32_t b = input[(dy + effective_v) * width + (dx + effective_u)];
+                    float a1 = (a & 0x000000FF) / 256.f;
+                    float a2 = ((a & 0x0000FF00) >> 8) / 256.f;
+                    float a3 = ((a & 0x00FF0000) >> 16) / 256.f;
+                    float b1 = (b & 0x000000FF) / 256.f;
+                    float b2 = ((b & 0x0000FF00) >> 8) / 256.f;
+                    float b3 = ((b & 0x00FF0000) >> 16) / 256.f;
+                    float d1 = (b1 - a1);
+                    float d2 = (b2 - a2);
+                    float d3 = (b3 - a3);
+                    float diff = d1 * d1 + d2 * d2 + d3 * d3;
+                    ssd += diff;
+                }
+            }
+
+            if (ssd < min_ssd)
+            {
+                min_ssd = ssd;
+            }
+        }
+    }
+
+    const float threshold = 3.f;
+    return (min_ssd > threshold);
+}
+
+std::unique_ptr<uint32_t[]> detect_interest_points(const std::unique_ptr<uint32_t[]>& input, bool isBGRA, int width, int height)
+{
+    UNREFERENCED_PARAMETER(isBGRA);
+
+    std::unique_ptr<uint32_t[]> interest_points(new uint32_t[width * height]);
+    if (!interest_points)
+    {
+        assert(false);
+        return nullptr;
+    }
+
+    // start by copying over the entire contents of the image
+    size_t num_bytes = sizeof(uint32_t) * width * height;
+    memcpy_s(interest_points.get(), num_bytes, input.get(), num_bytes);
+
+    // use a sliding 8x8 pixel window to try and find interest points. if we find one,
+    // draw a border around it in the output buffer
+    int window_size = 8;
+    int yEnd = height - window_size;
+    int xEnd = width - window_size;
+
+    for (int y = 0; y < yEnd; ++y)
+    {
+        for (int x = 0; x < xEnd; ++x)
+        {
+            if (is_interest_point(input.get(), x, y, width, window_size))
+            {
+                // draw rectangle
+                for (int dy = y; dy < y + 8; ++dy)
+                {
+                    for (int dx = x; dx < x + 8; ++dx)
+                    {
+                        if (dy == y || dy == y + 7)
+                        {
+                            interest_points[dy * width + dx] = 0xFFFFFFFF;
+                        }
+                        else if (dx == x || dx == x + 7)
+                        {
+                            interest_points[dy * width + dx] = 0xFFFFFFFF;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return interest_points;
+}
